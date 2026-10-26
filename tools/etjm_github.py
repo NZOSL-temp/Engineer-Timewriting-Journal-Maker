@@ -95,6 +95,7 @@ def commit_and_push(repo: Path, paths: list[str], message: str, regenerate,
         push = git(repo, "push", "--quiet", "origin", f"HEAD:{branch}", check=False)
         if push.returncode == 0:
             return True, result
-        print(f"Push was rejected (attempt {attempt + 1}); retrying from the latest commit.")
+        reason = (push.stderr or "").strip().splitlines()[-1:] or ["no reason given"]
+        print(f"Push to {branch} was rejected (attempt {attempt + 1}: {reason[0]}); retrying from the latest commit.")
         time.sleep(2 ** attempt + random.random() * 2)
     raise RuntimeError(f"Couldn't push to {branch} after {attempts} attempts.")
