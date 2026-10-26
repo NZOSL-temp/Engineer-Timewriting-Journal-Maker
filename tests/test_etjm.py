@@ -718,3 +718,37 @@ class DeletedMonthTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RestoreMonthsTests(unittest.TestCase):
+    """tools/restore_months.py: a month's verified copies become issues again; a month can be emptied."""
+
+    def test_restore_and_clear(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+        from etjm_core import decrypt_timesheet_issue
+        from restore_months import clear_month, restored_issues
+        from etjm_vault import OUTPUT, SETTINGS, TIMESHEETS, USERS, Vault
+
+        keys, _, state = world()
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Vault(Path(tmp), MASTER)
+            vault.write_json(USERS, state)
+            vault.write_json(SETTINGS, {"employees": [{"name": "Ann Example"}, {"name": "Ben Sample"}], "closedMonths": ["2026-09", "2026-10"]})
+            ann = parse_timesheet(sheet(jobs=[{"job": "JOB000010", "hours": {"REVEX": {"3": 2}}}]))
+            ann.username = "ann.example"
+            for month, data in (("2026-09", ann.to_json()), ("2026-10", {**ann.to_json(), "month": "2026-10"})):
+                vault.write_json(vault.month_path(TIMESHEETS, month), {"month": month, "timesheets": [data]})
+                vault.write_json(vault.month_path(OUTPUT, month), {"month": month, "files": {}})
+
+            issues = restored_issues(vault, keys, "2026-09", set())
+            self.assertEqual(len(issues), 1)
+            username, back = decrypt_timesheet_issue({**issues[0], "number": 7}, keys_by_tag(keys, state))
+            self.assertEqual((username, back.month_key, [(l.job, l.task, l.total) for l in back.jobs]),
+                             ("ann.example", "2026-09", [("JOB000010", "REVEX", 2)]))
+            self.assertEqual(restored_issues(vault, keys, "2026-09", {issues[0]["title"]}), [])  # not twice
+
+            clear_month(vault, "2026-10")
+            self.assertEqual(vault.read_json(SETTINGS)["closedMonths"], ["2026-09"])
+            self.assertNotIn("2026-10", vault.months(TIMESHEETS))
+            self.assertNotIn("2026-10", vault.months(OUTPUT))
+            self.assertIn("2026-09", vault.months(OUTPUT))
