@@ -4,10 +4,10 @@ This private repo holds everything for the timewriting website that must not be 
 Business Central report, the sign-ins, the saved timesheets, the recharge rates and the finished
 journals. **Every file here is encrypted**, so the files on GitHub look like random text. Use the
 website's **Admin page** to work with them. How it's all protected is in the website repo's
-[SECURITY.md](https://github.com/nzosl-admin/Engineer-Timewriting-Journal-Maker/blob/main/SECURITY.md).
+[SECURITY.md](https://github.com/NZOSL-temp/Engineer-Timewriting-Journal-Maker/blob/main/SECURITY.md).
 
-- Website: https://nzosl-admin.github.io/Engineer-Timewriting-Journal-Maker/
-- Website code: https://github.com/nzosl-admin/Engineer-Timewriting-Journal-Maker
+- Website: https://nzosl-temp.github.io/Engineer-Timewriting-Journal-Maker/
+- Website code: https://github.com/NZOSL-temp/Engineer-Timewriting-Journal-Maker
 
 ## Everyday tasks
 

@@ -14,8 +14,8 @@
  *
  * Script properties (Project Settings, then Script properties):
  *   GITHUB_TOKEN  a fine-grained token with Issues: read and write, on the data repo only
- *   DATA_REPO     nzosl-admin/Engineer-Timewriting-Data
- *   SITE_URL      https://nzosl-admin.github.io/Engineer-Timewriting-Journal-Maker/
+ *   DATA_REPO     NZOSL-temp/Engineer-Timewriting-Data
+ *   SITE_URL      https://nzosl-temp.github.io/Engineer-Timewriting-Journal-Maker/
  *   RELAY_SECRET  made by running setup() once; copy it into the data repo's RELAY_SECRET secret
  *
  * See README.md next to this file for how to set it up.

@@ -15,22 +15,22 @@ is in [SECURITY.md](../SECURITY.md#forgotten-passwords).
 
 ## Setting it up
 
-You need about 15 minutes, the office's Google account, and the nzosl-admin GitHub account.
+You need about 15 minutes, the office's Google account, and the nzosl-admin GitHub account (an owner of NZOSL-temp).
 
 ### 1. Create the script
 
 1. Signed in to the office's Google account, open <https://script.google.com> and click **New project**.
 2. Click **Untitled project** (top left) and rename it `Engineer Timewriting reset helper`.
-3. Open [Code.gs on GitHub](https://github.com/nzosl-admin/Engineer-Timewriting-Journal-Maker/blob/main/relay/Code.gs),
+3. Open [Code.gs on GitHub](https://github.com/NZOSL-temp/Engineer-Timewriting-Journal-Maker/blob/main/relay/Code.gs),
    click the **Copy raw file** button (two overlapping squares, top right of the code).
 4. Back in the script, select everything in `Code.gs` (Cmd+A), paste (Cmd+V), and save (Cmd+S).
 
 ### 2. Give it a GitHub token
 
 1. On GitHub, go to <https://github.com/settings/personal-access-tokens> and click **Generate new token**.
-2. Token name `Timewriting reset requests`; Resource owner **nzosl-admin**; Expiration as long as allowed
+2. Token name `Timewriting reset requests`; Resource owner **NZOSL-temp**; Expiration as long as allowed
    (put a reminder in your calendar); Repository access **Only select repositories** →
-   **nzosl-admin/Engineer-Timewriting-Data**; Permissions → **Issues: Read and write** (nothing else).
+   **NZOSL-temp/Engineer-Timewriting-Data**; Permissions → **Issues: Read and write** (nothing else).
 3. Click **Generate token** and copy it.
 
 ### 3. Script properties
@@ -41,8 +41,8 @@ You need about 15 minutes, the office's Google account, and the nzosl-admin GitH
    | Property | Value |
    | --- | --- |
    | `GITHUB_TOKEN` | the token you just copied |
-   | `DATA_REPO` | `nzosl-admin/Engineer-Timewriting-Data` |
-   | `SITE_URL` | `https://nzosl-admin.github.io/Engineer-Timewriting-Journal-Maker/` |
+   | `DATA_REPO` | `NZOSL-temp/Engineer-Timewriting-Data` |
+   | `SITE_URL` | `https://nzosl-temp.github.io/Engineer-Timewriting-Journal-Maker/` |
 
 2. Click **Save script properties**.
 
@@ -64,7 +64,7 @@ You need about 15 minutes, the office's Google account, and the nzosl-admin GitH
 
 ### 6. Tell the data repo
 
-On <https://github.com/nzosl-admin/Engineer-Timewriting-Data/settings/secrets/actions>:
+On <https://github.com/NZOSL-temp/Engineer-Timewriting-Data/settings/secrets/actions>:
 
 1. **Secrets** tab → **New repository secret**: name `RELAY_SECRET`, value from step 4.
 2. **Variables** tab → **New repository variable**: name `RELAY_URL`, value the Web app URL from step 5.

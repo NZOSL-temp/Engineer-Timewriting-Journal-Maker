@@ -125,7 +125,7 @@ Azure Function, and IT to register an app.
 ## Recommended account settings
 
 * Turn on **two-factor authentication** for every GitHub account that can reach these
-  repos, on the nzosl-admin account (Settings → Password and authentication).
+  repos, and require it for the NZOSL-temp organisation (Settings → Authentication security).
 * Keep `MASTER_KEY` in a password manager as well. GitHub can't show a secret again, and
   without it nothing in the data repo can be opened. To change it (for example if the only
   copy is GitHub's), add a `NEW_MASTER_KEY` secret: the next run re-encrypts everything

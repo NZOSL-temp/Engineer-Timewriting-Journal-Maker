@@ -57,7 +57,7 @@ from etjm_vault import JOBS, REPORT, USERS, Vault  # noqa: E402
 
 BUNDLE_PATH = Path("site/data/bundle.enc.json")
 USERS_PATH = Path("site/data/users.json")
-DEFAULT_SITE_URL = "https://nzosl-admin.github.io/Engineer-Timewriting-Journal-Maker/"
+DEFAULT_SITE_URL = "https://nzosl-temp.github.io/Engineer-Timewriting-Journal-Maker/"
 
 
 def report_date(data_dir: Path) -> str:
