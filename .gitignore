@@ -1,0 +1,8 @@
+# This repo is public: never commit Business Central exports, journals or timesheets here.
+# They belong in the private data repo.
+*.xlsx
+*.xls
+*.csv
+__pycache__/
+*.pyc
+.DS_Store

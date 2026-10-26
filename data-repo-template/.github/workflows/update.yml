@@ -1,0 +1,78 @@
+# Runs when the BC report, settings.json or users.json changes, and whenever someone
+# saves a timesheet, changes their password or asks for a password-reset email on the
+# website (all of these arrive as issues). It updates the sign-ins and the website's job
+# list, sends any reset emails, then rebuilds the journals. Every six hours it also runs
+# on its own, to remove password-reset links that have run out.
+name: Update website and journals
+
+on:
+  push:
+    branches: [main]
+    paths: ["input/**", "settings.json", "users.json"]
+  issues:
+    types: [opened, edited, reopened]
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+# One run at a time. A newer run replaces a waiting one, which is fine: every run
+# rebuilds everything from scratch.
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: github.event_name != 'issues' || contains(github.event.issue.body, 'etjm:')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Every action is pinned to an exact commit, so a moved tag can't change what runs.
+      - name: Check out this repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Check out the website repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: nzosl-admin/Engineer-Timewriting-Journal-Maker
+          ssh-key: ${{ secrets.SITE_DEPLOY_KEY }}
+          path: .website
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install the tools (exact versions, checked against their hashes)
+        run: python -m pip install --disable-pip-version-check --require-hashes --no-deps -r .website/tools/requirements.txt
+      # Changing MASTER_KEY: while a NEW_MASTER_KEY secret exists, everything is re-encrypted
+      # with it first (once), and the steps below use it. See tools/rotate_master_key.py.
+      - name: Check for a new MASTER_KEY
+        id: keys
+        env:
+          NEW_MASTER_KEY: ${{ secrets.NEW_MASTER_KEY }}
+        run: echo "rotate=$([ -n "$NEW_MASTER_KEY" ] && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+      - name: Switch to the new MASTER_KEY
+        if: steps.keys.outputs.rotate == 'yes'
+        env:
+          OLD_MASTER_KEY: ${{ secrets.MASTER_KEY }}
+          NEW_MASTER_KEY: ${{ secrets.NEW_MASTER_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python .website/tools/rotate_master_key.py --data-dir . --push
+      - name: Update sign-ins and the website's job list
+        env:
+          MASTER_KEY: ${{ secrets.NEW_MASTER_KEY || secrets.MASTER_KEY }}
+          SAVE_TOKEN: ${{ secrets.SAVE_TOKEN }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          RELAY_URL: ${{ vars.RELAY_URL }}
+          RELAY_SECRET: ${{ secrets.RELAY_SECRET }}
+          SITE_URL: https://nzosl-admin.github.io/Engineer-Timewriting-Journal-Maker/
+        run: python .website/tools/publish_website.py --data-dir . --site-dir .website --push
+      - name: Rebuild the journals and engineer workbooks
+        env:
+          MASTER_KEY: ${{ secrets.NEW_MASTER_KEY || secrets.MASTER_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python .website/tools/build_outputs.py --data-dir . --push

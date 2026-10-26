@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://api.github.com; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; require-trusted-types-for 'script'; trusted-types 'none'; upgrade-insecure-requests">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex">
+  <title>Admin · Engineer Timewriting</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/styles.css">
+  <script type="module" src="assets/admin.js"></script>
+</head>
+<body class="home-page">
+  <header class="topbar">
+    <a class="brand" href="admin.html">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect class="bm-bg" x="2" y="5" width="28" height="25" rx="6"/><path class="bm-line" d="M2 12.5h28"/><path class="bm-pin" d="M10 3v5M22 3v5"/><rect class="bm-cell" x="7" y="16" width="5" height="4" rx="1"/><rect class="bm-cell bm-hot" x="13.5" y="16" width="5" height="4" rx="1"/><rect class="bm-cell" x="20" y="16" width="5" height="4" rx="1"/><rect class="bm-cell" x="7" y="22" width="5" height="4" rx="1"/><rect class="bm-cell" x="13.5" y="22" width="5" height="4" rx="1"/></svg>
+      <span>Engineer Timewriting</span>
+    </a>
+    <span class="topbar-title">Admin</span>
+    <div class="user">
+      <a id="timesheets-link" class="btn btn-sm" href="home.html" hidden>My timesheets</a>
+      <span id="user-name" class="user-name"></span>
+      <a class="btn btn-ghost btn-sm" href="settings.html">Settings</a>
+      <a class="btn btn-ghost btn-sm" href="index.html?signout=1">Sign out</a>
+    </div>
+  </header>
+
+  <main class="home home-wide">
+    <div id="notices" class="notices" aria-live="polite"></div>
+
+    <section id="jobs-card" class="card admin-card" aria-labelledby="jobs-title">
+      <div class="card-head">
+        <h1 id="jobs-title">Job list</h1>
+        <p id="jobs-current" class="muted">Loading…</p>
+      </div>
+      <div class="card-body">
+        <label id="dropzone" class="dropzone">
+          <input id="report-file" class="sr-only" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+          <span class="dropzone-icon" aria-hidden="true">⇪</span>
+          <strong>Upload a new Job Task Overview report</strong>
+          <span class="muted">Drop the .xlsx exported from Business Central here, or click to choose it. It replaces the current report.</span>
+        </label>
+        <ol id="upload-steps" class="steps" aria-live="polite" hidden></ol>
+      </div>
+    </section>
+
+    <section id="staff-card" class="card admin-card" aria-labelledby="staff-title">
+      <div class="card-head">
+        <h2 id="staff-title">Engineers</h2>
+        <p class="muted">Who can sign in to fill in timesheets, and the recharge rate (per hour) used in their journal lines. Changes apply to every month that isn’t closed.</p>
+      </div>
+      <div id="staff" class="card-body"><p class="muted">Loading…</p></div>
+    </section>
+
+    <section id="journals-card" class="card admin-card" aria-labelledby="journals-title">
+      <div class="card-head">
+        <h2 id="journals-title">Journals</h2>
+        <p class="muted">Rebuilt automatically each time an engineer saves. Download the CSV to upload to Business Central, then <strong>Close</strong> the month: that freezes its journal, so later changes to timesheets or rates don’t alter it.</p>
+        <label class="check workbook-option"><input id="include-empty" type="checkbox" checked> Include jobs with no hours in the engineer workbooks</label>
+      </div>
+      <div id="journals" class="card-body"><p class="muted">Loading…</p></div>
+    </section>
+  </main>
+</body>
+</html>

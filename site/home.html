@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://api.github.com; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; require-trusted-types-for 'script'; trusted-types 'none'; upgrade-insecure-requests">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex">
+  <title>My timesheets · Engineer Timewriting</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/styles.css">
+  <script type="module" src="assets/home.js"></script>
+</head>
+<body class="home-page">
+  <header class="topbar">
+    <a class="brand" href="home.html">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect class="bm-bg" x="2" y="5" width="28" height="25" rx="6"/><path class="bm-line" d="M2 12.5h28"/><path class="bm-pin" d="M10 3v5M22 3v5"/><rect class="bm-cell" x="7" y="16" width="5" height="4" rx="1"/><rect class="bm-cell bm-hot" x="13.5" y="16" width="5" height="4" rx="1"/><rect class="bm-cell" x="20" y="16" width="5" height="4" rx="1"/><rect class="bm-cell" x="7" y="22" width="5" height="4" rx="1"/><rect class="bm-cell" x="13.5" y="22" width="5" height="4" rx="1"/></svg>
+      <span>Engineer Timewriting</span>
+    </a>
+    <span></span>
+    <div class="user">
+      <a id="admin-link" class="btn btn-sm" href="admin.html" hidden>Admin</a>
+      <span id="user-name" class="user-name"></span>
+      <a class="btn btn-ghost btn-sm" href="settings.html">Settings</a>
+      <a class="btn btn-ghost btn-sm" href="index.html?signout=1">Sign out</a>
+    </div>
+  </header>
+
+  <main class="home">
+    <div id="notices" class="notices" aria-live="polite"></div>
+
+    <section class="card sheets-card" aria-labelledby="all-sheets">
+      <div class="sheets-head sheets-head-actions">
+        <div>
+          <h1 id="all-sheets">Your timesheets</h1>
+          <p id="sheets-hint" class="muted">Open a month to fill in or change your hours. <strong>New timesheet</strong> starts another month, empty or with the job template copied from one you’ve done before.</p>
+        </div>
+        <button id="new-sheet" class="btn btn-primary" type="button" hidden>New timesheet</button>
+      </div>
+      <div id="new-panel" class="new-panel" hidden></div>
+      <div id="sheets" class="sheets-body"><p class="muted pad">Loading…</p></div>
+    </section>
+
+    <p id="meta" class="meta"></p>
+  </main>
+</body>
+</html>

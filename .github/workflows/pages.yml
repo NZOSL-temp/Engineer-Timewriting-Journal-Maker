@@ -1,0 +1,45 @@
+name: Deploy website
+
+on:
+  push:
+    branches: [main]
+    paths: ["site/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # Every action is pinned to an exact commit, so a moved tag can't change what runs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Give this version of the code a name, put it in every script and stylesheet address so
+      # browsers fetch the new files straight away, and publish it as version.json so pages
+      # that are already open can tell they're out of date (see watchForUpdates in app.js).
+      - name: Stamp the version
+        run: |
+          v=$(cat site/*.html site/assets/* | sha256sum | cut -c1-12)
+          echo "{\"version\": \"$v\"}" > site/version.json
+          sed -i "s/__ETJM_VERSION__/$v/" site/assets/app.js
+          sed -i -E "s#from '\./([a-z]+)\.js'#from './\1.js?v=$v'#g" site/assets/*.js
+          sed -i -E "s#(assets/[a-z]+\.(js|css))\"#\1?v=$v\"#g" site/*.html
+          echo "Version $v"
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

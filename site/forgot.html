@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://script.google.com https://script.googleusercontent.com; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; require-trusted-types-for 'script'; trusted-types 'none'; upgrade-insecure-requests">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex">
+  <title>Forgot your password · Engineer Timewriting</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/styles.css">
+  <script type="module" src="assets/forgot.js"></script>
+</head>
+<body class="signin-page">
+  <main class="signin">
+    <div class="brand brand-lg">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect class="bm-bg" x="2" y="5" width="28" height="25" rx="6"/><path class="bm-line" d="M2 12.5h28"/><path class="bm-pin" d="M10 3v5M22 3v5"/><rect class="bm-cell" x="7" y="16" width="5" height="4" rx="1"/><rect class="bm-cell bm-hot" x="13.5" y="16" width="5" height="4" rx="1"/><rect class="bm-cell" x="20" y="16" width="5" height="4" rx="1"/><rect class="bm-cell" x="7" y="22" width="5" height="4" rx="1"/><rect class="bm-cell" x="13.5" y="22" width="5" height="4" rx="1"/></svg>
+      <span>Engineer Timewriting</span>
+    </div>
+    <form id="forgot-form" class="card signin-card" novalidate>
+      <h1>Forgot your password?</h1>
+      <p class="muted">Enter your username and we’ll email you a link to choose a new password. It goes to the email address the office has for you.</p>
+      <label class="field">
+        <span>Username</span>
+        <input id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="40" placeholder="e.g. alex.smith" required>
+        <small>Usually your first and last name with a dot between, like alex.smith.</small>
+      </label>
+      <p id="message" class="form-message" role="alert" hidden></p>
+      <button id="submit" class="btn btn-primary btn-block" type="submit">Email me a reset link</button>
+      <p class="signin-alt"><a href="index.html">Back to sign in</a></p>
+    </form>
+    <section id="sent" class="card signin-card" hidden aria-labelledby="sent-title">
+      <h1 id="sent-title">Check your email</h1>
+      <p>If <strong id="sent-user"></strong> has an email address with the office, a link to choose a new password is on its way.</p>
+      <ul class="plain-list muted">
+        <li>It usually arrives within a couple of minutes. Check your junk folder too.</li>
+        <li>The link works once, for an hour. Your old password keeps working until you use it.</li>
+        <li>Nothing arrived? Ask the office for a new password.</li>
+      </ul>
+      <a class="btn btn-block" href="index.html">Back to sign in</a>
+    </section>
+    <section id="off" class="card signin-card" hidden>
+      <h1>Forgot your password?</h1>
+      <p>Resetting a password by email isn’t switched on yet. Please ask the office for a new password.</p>
+      <a class="btn btn-block" href="index.html">Back to sign in</a>
+    </section>
+  </main>
+</body>
+</html>

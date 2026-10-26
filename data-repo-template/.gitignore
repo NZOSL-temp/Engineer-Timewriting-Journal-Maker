@@ -1,0 +1,10 @@
+# Every file in this repo is encrypted (see tools/etjm_vault.py in the website repo).
+# Never commit plain spreadsheets, journals or settings here.
+*.xlsx
+*.xls
+*.csv
+settings.example.json
+.website/
+__pycache__/
+.DS_Store
+~$*

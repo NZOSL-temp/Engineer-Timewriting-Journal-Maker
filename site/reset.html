@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://api.github.com; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; require-trusted-types-for 'script'; trusted-types 'none'; upgrade-insecure-requests">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex">
+  <title>Choose a new password · Engineer Timewriting</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/styles.css">
+  <script type="module" src="assets/reset.js"></script>
+</head>
+<body class="signin-page">
+  <main class="signin">
+    <div class="brand brand-lg">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect class="bm-bg" x="2" y="5" width="28" height="25" rx="6"/><path class="bm-line" d="M2 12.5h28"/><path class="bm-pin" d="M10 3v5M22 3v5"/><rect class="bm-cell" x="7" y="16" width="5" height="4" rx="1"/><rect class="bm-cell bm-hot" x="13.5" y="16" width="5" height="4" rx="1"/><rect class="bm-cell" x="20" y="16" width="5" height="4" rx="1"/><rect class="bm-cell" x="7" y="22" width="5" height="4" rx="1"/><rect class="bm-cell" x="13.5" y="22" width="5" height="4" rx="1"/></svg>
+      <span>Engineer Timewriting</span>
+    </div>
+    <section id="status" class="card signin-card" aria-live="polite">
+      <h1 id="status-title">Checking your link…</h1>
+      <p id="status-text" class="muted">This takes a moment.</p>
+      <div id="status-actions"></div>
+    </section>
+    <form id="reset-form" class="card signin-card" novalidate hidden>
+      <h1>Choose a new password</h1>
+      <p class="muted">For <strong id="reset-user"></strong>. Use at least 12 characters: a few words with spaces works well. Capitals, spaces and dashes don’t matter.</p>
+      <label class="field">
+        <span>New password</span>
+        <span class="password-wrap">
+          <input id="new-password" type="password" autocomplete="new-password" required>
+          <button id="peek-new" class="peek-btn" type="button" aria-label="Hold to show the password" title="Hold to show the password">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path class="eye" d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle class="eye" cx="12" cy="12" r="3"/><path class="slash" d="M4 4l16 16"/></svg>
+          </button>
+        </span>
+      </label>
+      <label class="field">
+        <span>New password again</span>
+        <span class="password-wrap">
+          <input id="new-password-again" type="password" autocomplete="new-password" required>
+          <button id="peek-again" class="peek-btn" type="button" aria-label="Hold to show the password" title="Hold to show the password">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path class="eye" d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle class="eye" cx="12" cy="12" r="3"/><path class="slash" d="M4 4l16 16"/></svg>
+          </button>
+        </span>
+      </label>
+      <p id="message" class="form-message" role="alert" hidden></p>
+      <button id="submit" class="btn btn-primary btn-block" type="submit">Set my new password</button>
+      <p class="signin-alt muted">This link works once, until <span id="reset-expires"></span>.</p>
+    </form>
+  </main>
+</body>
+</html>
