@@ -1,21 +1,26 @@
 // "My timesheets": the signed-in person's months, saved to the office or kept on this
 // computer. Open one to change it, delete one the office hasn't closed, or start a new one,
-// with the jobs and other-time rows from an earlier month if they like.
-// With ?as=<username>, an admin sees that engineer's page instead, read-only (see
-// openViewAs in app.js).
+// with the jobs and other-time rows from an earlier month, or from their own spreadsheet.
+// With ?as=<username>, an admin sees that engineer's page instead (see openViewAs in app.js):
+// read-only, until they press "Allow write access"; then they can do all of this for them.
 
 import {
   $, el, toast, loadSession, clearSession, openSession, listSaved, deleteSaved, drafts, sheetTotals, monthInfo,
-  shiftMonth, thisMonth, fmtHours, fmtDateTime, viewAsParam, openViewAs,
+  shiftMonth, thisMonth, fmtHours, fmtDateTime, viewAsParam, openViewAs, askConfirm, writerFor, writeAccess,
+  writeAccessText, sheetImports,
 } from './app.js';
+import { readFirstSheet, sheetMonth, timesheetFromSheet } from './xlsx.js';
 
 const session = loadSession();
 if (!session?.uk) location.replace('index.html');
 
 const viewing = viewAsParam();
-const state = { bundle: null, profile: null, canSave: false, sheets: new Map(), loadError: null, viewAs: null };
-const open = (month, copyFrom, withClosed) => `timesheet.html?month=${month}${copyFrom ? `&copyFrom=${copyFrom}` : ''}${
-  copyFrom && withClosed ? '&closed=1' : ''}${state.viewAs ? `&as=${encodeURIComponent(state.viewAs.person.username)}` : ''}`;
+const state = { bundle: null, profile: null, canSave: false, sheets: new Map(), loadError: null, viewAs: null, writing: false };
+const open = (month, { copyFrom, withClosed, fromSheet } = {}) => `timesheet.html?month=${month}${copyFrom ? `&copyFrom=${copyFrom}` : ''}${
+  copyFrom && withClosed ? '&closed=1' : ''}${fromSheet ? '&fromSheet=1' : ''}${state.viewAs ? `&as=${encodeURIComponent(state.viewAs.person.username)}` : ''}`;
+// Whose timesheets these are, and what saving as them needs (the office uses the engineer's keys).
+const owner = () => (state.viewAs ? state.viewAs.person.username : session.username);
+const saver = () => (state.viewAs ? writerFor(state.profile, state.viewAs.person) : state.profile);
 const isClosed = (month) => (state.bundle?.closedMonths || []).includes(month);
 
 function hasRows(data) {
@@ -62,7 +67,7 @@ function collectViewed() {
   const sheets = new Map();
   for (const [month, item] of state.viewAs.months) {
     sheets.set(month, {
-      month, data: item.data, totals: sheetTotals(item.data),
+      month, saved: item, data: item.data, totals: sheetTotals(item.data),
       status: isClosed(month) ? { tone: 'muted', text: 'Closed by the office' } : { tone: 'ok', text: `Saved ${fmtDateTime(item.savedAt)}` },
     });
   }
@@ -72,15 +77,42 @@ function collectViewed() {
 function showViewing() {
   const { person } = state.viewAs;
   const first = person.name.split(' ')[0];
-  document.title = `${person.name}’s timesheets (view only) · Engineer Timewriting`;
+  const canWrite = Boolean(state.profile?.writeKeys?.[person.username]);
+  document.title = `${person.name}’s timesheets (${state.writing ? 'editing' : 'view only'}) · Engineer Timewriting`;
   document.body.classList.add('viewing-as');
   $('#all-sheets').textContent = `${first}’s timesheets`;
-  $('#sheets-hint').textContent = `What ${first} sees on My timesheets. Open a month to see their hours. Nothing here can be changed.`;
-  $('#notices').replaceChildren(el('div', { class: 'notice notice-view' },
-    el('div', { class: 'notice-text' }, el('strong', {}, `Viewing ${person.name}’s timesheets, read-only. `),
-      `This is what they see, from the months they’ve saved${person.active ? '' : ' (they’ve left, so they can’t sign in)'}. `
-      + 'Hours they haven’t saved yet are only on their own computer.'),
-    el('a', { class: 'btn btn-sm', href: 'admin.html' }, 'Back to Admin')));
+  $('#sheets-hint').textContent = state.writing
+    ? `What ${first} sees on My timesheets. Open a month to change it, start a new one, or delete one the office hasn’t closed.`
+    : `What ${first} sees on My timesheets. Open a month to see their hours. Nothing here can be changed.`;
+  $('#new-sheet').hidden = !state.writing;
+  const back = el('a', { class: 'btn btn-sm', href: 'admin.html' }, 'Back to Admin');
+  $('#notices').replaceChildren(state.writing
+    ? el('div', { class: 'notice notice-warn' },
+      el('div', { class: 'notice-text' }, el('strong', {}, `Editing ${person.name}’s timesheets. `),
+        `What you save is stored as ${first}’s saved copy: they’ll see it, and the journal uses it. Closed months still can’t be changed.`),
+      el('button', { class: 'btn btn-sm', type: 'button', onclick: stopWriting }, 'Stop editing'), back)
+    : el('div', { class: 'notice notice-view' },
+      el('div', { class: 'notice-text' }, el('strong', {}, `Viewing ${person.name}’s timesheets, read-only. `),
+        `This is what they see, from the months they’ve saved${person.active ? '' : ' (they’ve left, so they can’t sign in)'}. `
+        + 'Hours they haven’t saved yet are only on their own computer.'),
+      canWrite ? el('button', { class: 'btn btn-sm', type: 'button', onclick: allowWriting }, 'Allow write access') : null, back));
+}
+
+async function allowWriting() {
+  const { person } = state.viewAs;
+  if (!(await askConfirm(`Allow write access to ${person.name}’s timesheets?`, writeAccessText(person), 'Allow write access'))) return;
+  writeAccess.allow(person.username);
+  state.writing = true;
+  showViewing();
+  render();
+}
+
+function stopWriting() {
+  writeAccess.stop(state.viewAs.person.username);
+  state.writing = false;
+  $('#new-panel').hidden = true;
+  showViewing();
+  render();
 }
 
 // ------------------------------------------------------------- the list
@@ -89,14 +121,14 @@ function render() {
   const months = [...state.sheets.keys()].sort().reverse();
   const body = $('#sheets');
   if (!months.length) {
-    body.replaceChildren(el('p', { class: 'muted pad' }, state.viewAs ? 'They haven’t saved any timesheets yet.'
+    body.replaceChildren(el('p', { class: 'muted pad' }, state.viewAs ? `They haven’t saved any timesheets yet.${state.writing ? ' Press New timesheet to start one.' : ''}`
       : state.loadError ? 'Nothing on this computer yet.' : 'No timesheets yet. Press New timesheet to start one.'));
     return;
   }
   const rows = months.map((month) => {
     const item = state.sheets.get(month);
     const label = monthInfo(month).label;
-    const actions = state.viewAs
+    const actions = state.viewAs && !state.writing
       ? [el('a', { class: 'btn btn-sm', href: open(month) }, 'View')]
       : [el('a', { class: 'btn btn-sm', href: open(month) }, 'Open'),
         !isClosed(month) && el('button', { class: 'btn btn-sm btn-danger-ghost', type: 'button', 'aria-label': `Delete ${label}`,
@@ -141,9 +173,9 @@ function confirmDelete(button, month) {
     go.textContent = 'Deleting…';
     try {
       const wasSaved = state.canSave
-        ? await deleteSaved(state.bundle, state.profile, session.username, month, sheet.saved?.issue || sheet.local?.meta?.issue)
+        ? await deleteSaved(state.bundle, saver(), owner(), month, sheet.saved?.issue || sheet.local?.meta?.issue)
         : false;
-      drafts.remove(session.username, month);
+      if (!state.viewAs) drafts.remove(session.username, month);
       state.sheets.delete(month);
       render();
       toast(wasSaved ? `Deleted ${label}. The journal updates in about a minute.` : `Deleted ${label}.`, { tone: 'ok' });
@@ -190,6 +222,7 @@ function showNewPanel() {
   const monthSelect = el('select', { id: 'new-month', class: 'reuse-select' },
     months.map((m) => el('option', { value: m, selected: m === pick }, monthInfo(m).label)));
   const reuse = el('input', { type: 'radio', name: 'start-with', value: 'reuse', checked: sources.length > 0, disabled: !sources.length });
+  const fromSheet = el('input', { type: 'radio', name: 'start-with', value: 'sheet' });
   const empty = el('input', { type: 'radio', name: 'start-with', value: 'empty', checked: !sources.length });
   const sourceSelect = el('select', { id: 'new-source', class: 'reuse-select', disabled: !sources.length, 'aria-label': 'Month to reuse' },
     sources.map((m) => el('option', { value: m }, monthInfo(m).label)));
@@ -219,9 +252,71 @@ function showNewPanel() {
   });
   reuse.addEventListener('change', updateClosed);
   empty.addEventListener('change', updateClosed);
+  fromSheet.addEventListener('change', updateClosed);
+
+  // Or from the engineer's own spreadsheet: read now (to suggest its month), filled in when the month opens.
+  const jobIndex = new Map((state.bundle?.jobs || []).map((job) => [job.no, job]));
+  const fileInput = el('input', { type: 'file', hidden: true,
+    accept: '.xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12' });
+  const fileButton = el('button', { class: 'btn btn-sm', type: 'button', onclick: () => { fileInput.value = ''; fileInput.click(); } }, 'Choose file…');
+  const fileStatus = el('span', { class: 'new-file-status muted', role: 'status' });
+  const say = (text, problem = false) => { fileStatus.textContent = text; fileStatus.classList.toggle('problem', problem); };
+  let chosen = null; // { name, sheet }
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+    fromSheet.checked = true;
+    updateClosed();
+    chosen = null;
+    say('Reading…');
+    try {
+      if (!/\.xls[xm]$/i.test(file.name)) throw new Error('That isn’t an Excel workbook (.xlsx). In Excel, use File › Save As › Excel Workbook (.xlsx).');
+      if (file.size > 25 * 1024 * 1024) throw new Error('That file is too big to be a timesheet (over 25 MB).');
+      const sheet = await readFirstSheet(new Uint8Array(await file.arrayBuffer()));
+      chosen = { name: file.name, sheet };
+      const month = sheetMonth(sheet);
+      const label = month ? monthInfo(month).label : '';
+      if (!month) say(`${file.name}: pick its month above.`);
+      else if (months.includes(month)) {
+        monthSelect.value = month;
+        defaultSource();
+        say(`${file.name}: for ${label}.`);
+      } else if (isClosed(month)) say(`${file.name} is for ${label}, which the office has closed.`, true);
+      else if (state.sheets.has(month)) say(`${file.name} is for ${label}, which already has a timesheet: open it below and use Load from spreadsheet there.`, true);
+      else say(`${file.name} is for ${label}. Only this month and the next two can be started here: open ${label} with the ‹ › arrows on a timesheet and use Load from spreadsheet there.`, true);
+    } catch (error) {
+      say(error.message || 'That spreadsheet couldn’t be read.', true);
+    }
+  });
+
   const startButton = el('button', { class: 'btn btn-primary', type: 'button', onclick: () => {
+    const month = monthSelect.value;
+    if (fromSheet.checked) {
+      if (!chosen) {
+        say('Choose the spreadsheet first.', true);
+        fileButton.focus();
+        return;
+      }
+      let result;
+      try {
+        result = timesheetFromSheet(chosen.sheet, month, { jobs: jobIndex, otherTime: state.bundle.otherTime || [] });
+      } catch (error) {
+        say(error.message, true);
+        return;
+      }
+      if (!result.data.jobs.length && !result.data.other.length) {
+        say(`The first sheet of ${chosen.name} has no jobs or hours for ${monthInfo(month).label}.`, true);
+        return;
+      }
+      if (!sheetImports.put(owner(), month, { fileName: chosen.name, result })) {
+        say('This browser couldn’t pass the spreadsheet on. Open the month and use Load from spreadsheet there instead.', true);
+        return;
+      }
+      location.href = open(month, { fromSheet: true });
+      return;
+    }
     const source = reuse.checked && sourceSelect.value ? sourceSelect.value : null;
-    location.href = open(monthSelect.value, source, withClosed.checked);
+    location.href = open(month, { copyFrom: source, withClosed: withClosed.checked });
   } }, 'Start timesheet');
   panel.replaceChildren(
     el('div', { class: 'new-grid' },
@@ -229,7 +324,10 @@ function showNewPanel() {
       el('fieldset', { class: 'new-choice' },
         el('legend', {}, 'Start with'),
         el('label', { class: 'check' }, reuse, ' Copy job template from ', sourceSelect),
-        sources.length ? closedRow : el('p', { class: 'muted small' }, 'Nothing to reuse yet: your first timesheet starts empty.'),
+        sources.length ? closedRow : el('p', { class: 'muted small' }, 'No earlier timesheets to copy yet.'),
+        el('div', { class: 'new-file' },
+          el('label', { class: 'check' }, fromSheet, state.viewAs ? ' Their spreadsheet (.xlsx) ' : ' My spreadsheet (.xlsx) '),
+          fileButton, fileInput, fileStatus),
         el('label', { class: 'check' }, empty, ' An empty timesheet'))),
     el('div', { class: 'new-actions' }, startButton,
       el('button', { class: 'btn btn-ghost', type: 'button', onclick: () => { panel.hidden = true; } }, 'Cancel')));
@@ -253,9 +351,13 @@ async function start() {
         return;
       }
       state.bundle = opened.bundle;
+      state.profile = opened.profile;
+      state.canSave = Boolean(state.bundle.saveToken && state.bundle.dataRepo);
       $('#user-name').textContent = opened.profile.name;
       $('#admin-link').hidden = false;
       state.viewAs = await openViewAs(opened.bundle, opened.profile, viewing);
+      state.writing = writeAccess.has(viewing) && Boolean(opened.profile.writeKeys?.[viewing]);
+      $('#new-sheet').addEventListener('click', showNewPanel);
       showViewing();
       state.sheets = collectViewed();
       render();

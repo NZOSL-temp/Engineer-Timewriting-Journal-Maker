@@ -818,3 +818,9 @@ html.framed body { display: none !important; }
 body.drop-over::after { content: "Drop the spreadsheet to load it"; position: fixed; inset: 12px; z-index: 50; display: grid; place-items: center;
   border: 3px dashed var(--accent); border-radius: 16px; background: color-mix(in srgb, var(--surface) 85%, transparent);
   color: var(--accent); font-size: 20px; font-weight: 700; pointer-events: none; }
+
+/* New timesheet › My spreadsheet */
+.new-file { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.new-file-status { flex-basis: 100%; font-size: 13px; }
+.new-file-status:empty { display: none; }
+.new-file-status.problem { color: var(--danger); }

@@ -112,12 +112,15 @@ ones, and the epoch moves on, which signs out anyone who had the old password.
   password opens anything.
 * **Admins are trusted.** The admin token can read and change everything in the data repo.
   **View** on the Admin page shows an engineer's pages from the verified copies admins can
-  already read. After **Allow write access**, an admin can also save a month as the engineer:
-  admins' sign-ins carry each engineer's timesheet keys and tag for that (`writeKeys`), so the
-  save is accepted like the engineer's own. Admins could already sign in with issued passwords,
-  so this adds little; engineers who chose their own password can now be edited too.
-* **Spreadsheets are read in the browser.** **Load from spreadsheet** opens the .xlsx on the
-  engineer's (or admin's) computer; the file isn't uploaded anywhere.
+  already read. After **Allow write access**, an admin can also act as the engineer on their
+  timesheets (start, change, delete and save months): admins' sign-ins carry each engineer's
+  timesheet keys and tag for that (`writeKeys`), so their saves are accepted like the
+  engineer's own. Admins could already sign in with issued passwords, so this adds little;
+  engineers who chose their own password can now be edited too. The "allowed" switch itself is
+  only kept in that browser tab (cleared at sign-out); the keys are what matter.
+* **Spreadsheets are read in the browser.** **Load from spreadsheet** and New timesheet's **My
+  spreadsheet** open the .xlsx on the engineer's (or admin's) computer; the file isn't uploaded
+  anywhere (what's read is handed from My timesheets to the month in that tab's storage).
 * **No server means no rate limiting or audit of sign-ins.** All GitHub activity made
   through the website shows as the owner of the tokens.
 * **Tokens expire.** Fine-grained tokens have an end date: renew `SAVE_TOKEN` and

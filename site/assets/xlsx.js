@@ -211,6 +211,28 @@ const isTotalRow = (value) => /^(grand\s+)?total(\s+hours)?\s*:?$/i.test(value);
 const isNA = (value) => /^n\/?a$/i.test(value);
 const HEADING = /^(job|project)\s*(number|no\.?|#)$/i;
 
+// The month a timesheet spreadsheet is for ("2026-11"): the one most of the dates over its
+// hours fall in, else its MONTH row; '' if neither is there.
+export function sheetMonth(sheet) {
+  const key = (date) => `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+  const rows = sheet.rows;
+  const headerAt = rows.findIndex((row) => row.some((cell) => HEADING.test(text(cell))));
+  const counts = new Map();
+  if (headerAt >= 0) {
+    for (const row of [rows[headerAt], rows[headerAt - 1] || []]) {
+      for (const cell of row) {
+        const date = asDate(cell, sheet.date1904);
+        if (date) counts.set(key(date), (counts.get(key(date)) || 0) + 1);
+      }
+      if (counts.size) break;
+    }
+  }
+  if (counts.size) return [...counts].sort((a, b) => b[1] - a[1])[0][0];
+  const monthRow = rows.slice(0, headerAt < 0 ? 10 : headerAt).find((row) => /^month\s*:?$/i.test(text(row[0])));
+  const date = monthRow && asDate(monthRow[1], sheet.date1904);
+  return date ? key(date) : '';
+}
+
 /**
  * The month `month` ("2026-10") from a sheet read by readFirstSheet, in the saved-timesheet
  * shape ({ jobs, other }). `jobs` maps job numbers to the job list's entries (for CAPEX/REVEX

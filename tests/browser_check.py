@@ -12,6 +12,7 @@ GitHub. Covers loading a month from a spreadsheet and the office's "Allow write 
 from __future__ import annotations
 
 import base64
+import datetime as dt
 import hashlib
 import http.server
 import io
@@ -157,7 +158,7 @@ def issued(username):
 def saved_month(username, month):
     """The verified copy the journals use (timesheets/), as {job/task or label: {day: hours}}."""
     found = vault.months("timesheets").get(month)
-    sheet = next((t for t in (found[1]["timesheets"] if found else []) if t.get("username") == username), None)
+    sheet = next((t for t in (found[1]["timesheets"] if found else []) if t.get("username") == username and not t.get("deleted")), None)
     if not sheet:
         return None
     out = {f"{j['job']}/{task}": hours for j in sheet["jobs"] for task, hours in j["hours"].items()}
@@ -234,6 +235,42 @@ def read_in_page(page, path, month="2026-11"):
     }""", [base64.b64encode(Path(path).read_bytes()).decode(), month])
 
 
+def asking(page):
+    """Whether the page's question box is open (it's only made the first time it's needed)."""
+    box = page.locator("#confirm")
+    return box.count() > 0 and box.evaluate("d => d.open")
+
+
+def months_from_now(n):
+    """"YYYY-MM" n months after this month (New timesheet offers this month and the next two)."""
+    today = dt.date.today()
+    y, m = divmod(today.year * 12 + today.month - 1 + n, 12)
+    return f"{y}-{m + 1:02d}"
+
+
+def label_of(month):
+    return dt.date(int(month[:4]), int(month[5:]), 1).strftime("%B %Y")
+
+
+def first_of(month):
+    return dt.datetime(int(month[:4]), int(month[5:]), 1)
+
+
+def new_timesheet(page, month=None, *, source=None, sheet=None):
+    """On My timesheets: New timesheet, then Start with a copy of `source`, a spreadsheet, or empty."""
+    page.click("#new-sheet"); page.wait_for_timeout(300)
+    if sheet:
+        with page.expect_file_chooser() as chooser:
+            page.locator("#new-panel").get_by_role("button", name="Choose file…").click()
+        chooser.value.set_files(str(sheet)); page.wait_for_timeout(1200)
+    if month:
+        page.select_option("#new-month", month)
+    if source:
+        page.check("input[name='start-with'][value='reuse']"); page.select_option("#new-source", source)
+    elif not sheet:
+        page.check("input[name='start-with'][value='empty']")
+
+
 handler = type("Q", (http.server.SimpleHTTPRequestHandler,), {"log_message": lambda *a: None})
 site_server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), lambda *a, **k: handler(*a, directory=str(SITE), **k))
 threading.Thread(target=site_server.serve_forever, daemon=True).start()
@@ -281,7 +318,6 @@ def load_file(page, path):
     page.wait_for_timeout(800)
 
 
-import datetime as dt  # noqa: E402
 
 with sync_playwright() as p:
     browser = p.chromium.launch()
@@ -392,7 +428,7 @@ with sync_playwright() as p:
     ])
     load_file(page, first)
     shown = grid(page)
-    check("sheet: loads straight in when the month is empty", page.locator("#confirm").evaluate("d => !d.open"))
+    check("sheet: loads straight in when the month is empty", not asking(page))
     check("sheet: jobs, CAPEX/REVEX (incl. Manually selected and a job number in the description)",
           any("JOB009683" in k and v == {"1": 4, "3": 2.5} for k, v in shown.items())
           and any("JOB000010" in k and v == {"2": 1, "5": 6} for k, v in shown.items()), json.dumps(shown))
@@ -427,7 +463,7 @@ with sync_playwright() as p:
     second = tmp / "ann-november-2.xlsm"  # a macro workbook is fine too
     own_layout(second, nov, [["JOB009683", "DU", "80", "Wharfline log yard review", "REVEX", "", 0, None, 7]], total_row=False)
     load_file(page, second)
-    check("replace: asks first", page.locator("#confirm").evaluate("d => d.open") and "Replace November 2026" in page.locator("#confirm").inner_text())
+    check("replace: asks first", asking(page) and "Replace November 2026" in page.locator("#confirm").inner_text())
     page.click("#confirm-no"); page.wait_for_timeout(300)
     check("replace: Cancel keeps the month", grid(page) == shown)
     load_file(page, second); page.click("#confirm-yes"); page.wait_for_timeout(500)
@@ -444,6 +480,39 @@ with sync_playwright() as p:
     check("wrong month: refused, with why", "is for September 2026, not November 2026" in page.locator("#toast").inner_text()
           and grid(page) == after)
     page.screenshot(path=str(SHOTS / "sheet-loaded.png"), full_page=True)
+
+    # New timesheet › My spreadsheet: the month comes from the file, and it opens filled in
+    nxt = months_from_now(1)
+    mine = tmp / "ann-next-month.xlsx"
+    own_layout(mine, first_of(nxt), [["JOB009683", "DU", "80", "Wharfline log yard review", "REVEX", "", 0, 3, None, 1.5],
+                                      ["N/A", "N/A", "N/A", "Training", "", "", 0, None, 2]], total_row=False)
+    page.goto(SITE_URL + "home.html"); page.wait_for_selector("#new-sheet:not([hidden])", timeout=30000); page.wait_for_timeout(1500)
+    new_timesheet(page, sheet=wrong)
+    status = page.locator(".new-file-status")
+    check("new from sheet: a sheet for a month that can't be started says so", "is for September 2026" in status.inner_text()
+          and page.locator("input[name='start-with'][value='sheet']").is_checked(), status.inner_text())
+    page.get_by_role("button", name="Start timesheet").click(); page.wait_for_timeout(500)
+    check("new from sheet: ...and Start explains rather than opening", "home.html" in page.url and "is for September 2026, not" in status.inner_text(), status.inner_text())
+    page.locator("#new-panel").get_by_role("button", name="Cancel").click()
+    new_timesheet(page, sheet=mine)
+    page.locator("#new-panel").screenshot(path=str(SHOTS / "new-panel.png"))
+    page.set_viewport_size({"width": 390, "height": 844}); page.wait_for_timeout(300)
+    check("phone: the New timesheet panel fits", page.evaluate("document.documentElement.scrollWidth <= innerWidth"))
+    page.locator("#new-panel").screenshot(path=str(SHOTS / "new-panel-phone.png"))
+    page.set_viewport_size({"width": 1280, "height": 900}); page.wait_for_timeout(200)
+    check("new from sheet: the month is picked from the file", page.locator("#new-month").input_value() == nxt
+          and f"for {label_of(nxt)}" in status.inner_text(), f"{page.locator('#new-month').input_value()} {status.inner_text()}")
+    page.get_by_role("button", name="Start timesheet").click()
+    page.wait_for_url(re.compile(rf"timesheet\.html\?month={nxt}"), timeout=30000); wait_ready(page)
+    filled = grid(page)
+    check("new from sheet: opens filled in, ready to save", any("JOB009683" in k and v == {"1": 3, "3": 1.5} for k, v in filled.items())
+          and any("Training" in k and v == {"2": 2} for k, v in filled.items()) and "Loaded ann-next-month.xlsx" in page.locator("#notices").inner_text()
+          and "Unsaved" in page.locator("#save-status").inner_text(), json.dumps(filled))
+    page.click("#save-btn")
+    page.locator("#save-status").filter(has_text=re.compile("^Saved")).wait_for(timeout=30000)
+    wait_for_action()
+    check("new from sheet: saved", saved_month("ann.example", nxt) == {"JOB009683/REVEX": {"1": 3, "3": 1.5}, "Training": {"2": 2}},
+          json.dumps(saved_month("ann.example", nxt)))
     page.set_viewport_size({"width": 390, "height": 844}); page.wait_for_timeout(400)
     check("phone: the save bar fits (Load from spreadsheet included)", page.evaluate(
         "() => { const bar = document.querySelector('#savebar'); return bar.scrollWidth <= bar.clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth; }")
@@ -461,7 +530,7 @@ with sync_playwright() as p:
     check("office: Allow write access and Back to Admin offered", notice.get_by_role("button", name="Allow write access").is_visible()
           and notice.get_by_role("button", name="Back to Admin").is_visible())
     page.get_by_role("button", name="Allow write access").click()
-    check("office: asks before allowing it", page.locator("#confirm").evaluate("d => d.open") and "Allow write access to Ann Example" in page.locator("#confirm").inner_text())
+    check("office: asks before allowing it", asking(page) and "Allow write access to Ann Example" in page.locator("#confirm").inner_text())
     page.click("#confirm-yes"); page.wait_for_timeout(500)
     check("office: can edit after allowing", page.locator("#sheet-btn").is_visible() and page.locator("#save-btn").is_visible()
           and not page.locator("#grid-wrap input.cell").first.is_disabled() and "Editing Ann Example" in page.locator("#notices").inner_text()
@@ -472,7 +541,7 @@ with sync_playwright() as p:
     cell = page.locator("#grid-wrap tbody tr", has_text="JOB009683").locator("input.cell[data-day='9']")
     cell.fill("1.5"); cell.press("Tab")
     page.click("#next-month"); page.wait_for_timeout(300)
-    check("office: leaving a month with unsaved changes asks", page.locator("#confirm").evaluate("d => d.open")
+    check("office: leaving a month with unsaved changes asks", asking(page)
           and "Leave November 2026 without saving" in page.locator("#confirm").inner_text())
     page.click("#confirm-no"); page.wait_for_timeout(300)
     check("office: ...and Cancel stays, changes kept", "November 2026" in page.locator("#month-label").inner_text() and cell.input_value() == "1.5")
@@ -490,8 +559,100 @@ with sync_playwright() as p:
     check("office: Back to Admin goes back", page.url.endswith("admin.html"))
     ctx.close()
 
+    # ---- The office on Ann's My timesheets: everything she can do, once allowed
+    ctx, page = new_page(browser)
+    sign_in(page, "dee.office", r"admin\.html")
+    page.goto(SITE_URL + "home.html?as=ann.example"); page.wait_for_selector("#sheets table", timeout=30000)
+    notice = page.locator("#notices")
+    check("office home: read-only at first", page.locator("#new-sheet").is_hidden()
+          and page.locator("#sheets").get_by_role("button", name=re.compile("^Delete")).count() == 0
+          and notice.get_by_role("button", name="Allow write access").is_visible() and notice.get_by_role("link", name="Back to Admin").is_visible())
+    notice.get_by_role("button", name="Allow write access").click(); page.wait_for_timeout(300)
+    check("office home: asks first, saying what it allows", asking(page)
+          and "start new ones" in page.locator("#confirm").inner_text())
+    page.click("#confirm-yes"); page.wait_for_timeout(500)
+    check("office home: New timesheet, Open and Delete once allowed", page.locator("#new-sheet").is_visible()
+          and page.locator("#sheets").get_by_role("button", name="Delete November 2026").is_visible()
+          and "Editing Ann Example" in notice.inner_text() and notice.get_by_role("button", name="Stop editing").is_visible())
+    later = months_from_now(2)
+    new_timesheet(page, later, source="2026-11")
+    page.get_by_role("button", name="Start timesheet").click()
+    page.wait_for_url(re.compile(rf"timesheet\.html\?month={later}"), timeout=30000); wait_ready(page)
+    check("office: write access carries to the month (no second question)", not asking(page)
+          and "Editing Ann Example" in page.locator("#notices").inner_text() and page.locator("#save-btn").is_visible())
+    check("office: the job template was copied from November", page.locator("#grid-wrap tbody tr", has_text="JOB000010").count() >= 1
+          and page.locator("#grid-wrap tbody tr", has_text="JOB008298").count() == 1 and not grid(page), json.dumps(grid(page)))
+    cell = page.locator("#grid-wrap tbody tr", has_text="JOB009683").locator("input.cell[data-day='4']")
+    cell.fill("6"); cell.press("Tab")
+    page.click("#save-btn")
+    page.locator("#save-status").filter(has_text=re.compile("^Saved")).wait_for(timeout=30000)
+    check("office: the new month is saved as Ann's (straight away, before the Action)",
+          any(i["title"].startswith(f"Timesheet {later} ") for i in issues))
+    page.goto(SITE_URL + "home.html?as=ann.example"); page.wait_for_selector("#sheets table", timeout=30000)
+    row = page.locator("#sheets tbody tr", has_text=label_of(later))
+    check("office home: the new month is listed straight away, write access still on", row.count() == 1 and page.locator("#new-sheet").is_visible())
+    wait_for_action()
+    check("office: accepted by the Action as Ann's (with the template's other-time row)",
+          saved_month("ann.example", later) == {"JOB009683/REVEX": {"4": 6}, "General Time": {}}, json.dumps(saved_month("ann.example", later)))
+    row.get_by_role("button", name=f"Delete {label_of(later)}").click()
+    page.locator("tr.confirm-row").get_by_role("button", name=f"Delete {label_of(later)}").click()
+    page.locator("#toast", has_text="Deleted").wait_for(timeout=30000)
+    wait_for_action()
+    check("office home: deletes a month as Ann", saved_month("ann.example", later) is None and row.count() == 0)
+    theirs = tmp / "ann-later.xlsx"
+    own_layout(theirs, first_of(later), [["J0010-DU-80", "", "", "Tank repaint", "CAPEX", "", 0, None, None, 2]], total_row=False)
+    new_timesheet(page, sheet=theirs)
+    check("office home: Their spreadsheet, month picked from it", page.locator("#new-month").input_value() == later
+          and "Their spreadsheet" in page.locator("#new-panel").inner_text())
+    page.get_by_role("button", name="Start timesheet").click()
+    page.wait_for_url(re.compile(rf"timesheet\.html\?month={later}"), timeout=30000); wait_ready(page)
+    page.click("#save-btn")
+    page.locator("#save-status").filter(has_text=re.compile("^Saved")).wait_for(timeout=30000)
+    wait_for_action()
+    check("office: a month started from their spreadsheet is saved as Ann's", saved_month("ann.example", later) == {"JOB000010/CAPEX": {"3": 2}},
+          json.dumps(saved_month("ann.example", later)))
+    page.goto(SITE_URL + "home.html?as=ann.example"); page.wait_for_selector("#sheets table", timeout=30000)
+    page.locator("#notices").get_by_role("button", name="Stop editing").click(); page.wait_for_timeout(300)
+    check("office home: Stop editing is read-only again", page.locator("#new-sheet").is_hidden()
+          and page.locator("#sheets").get_by_role("button", name=re.compile("^Delete")).count() == 0)
+    page.goto(SITE_URL + f"timesheet.html?month={later}&as=ann.example"); wait_ready(page)
+    check("office: ...on her months too", page.locator("#save-btn").is_hidden() and page.locator("#grid-wrap input.cell").first.is_disabled())
+    page.screenshot(path=str(SHOTS / "office-home.png"), full_page=True)
+    ctx.close()
+
+    # The office doesn't silently replace a save of Ann's it hasn't seen
+    octx, opage = new_page(browser)
+    sign_in(opage, "dee.office", r"admin\.html")
+    opage.goto(SITE_URL + f"timesheet.html?month={nxt}&as=ann.example"); wait_ready(opage)
+    opage.locator("#notices").get_by_role("button", name="Allow write access").click(); opage.click("#confirm-yes"); opage.wait_for_timeout(400)
+    actx, apage = new_page(browser)
+    sign_in(apage, "ann.example", r"home\.html")
+    apage.goto(SITE_URL + f"timesheet.html?month={nxt}"); wait_ready(apage)
+    acell = apage.locator("#grid-wrap tbody tr", has_text="JOB009683").locator("input.cell[data-day='10']")
+    acell.fill("2"); acell.press("Tab"); apage.click("#save-btn")
+    apage.locator("#save-status").filter(has_text=re.compile("^Saved")).wait_for(timeout=30000)
+    actx.close()
+    ocell = lambda day: opage.locator("#grid-wrap tbody tr", has_text="JOB009683").locator(f"input.cell[data-day='{day}']")
+    ocell(11).fill("1"); ocell(11).press("Tab"); opage.click("#save-btn"); opage.wait_for_timeout(800)
+    check("clash: the office is asked before replacing a newer save of Ann's", asking(opage)
+          and "Ann saved" in opage.locator("#confirm").inner_text() and "Save over it" in opage.locator("#confirm").inner_text())
+    opage.click("#confirm-no"); opage.wait_for_timeout(400)
+    check("clash: Cancel saves nothing and offers her save", "Unsaved" in opage.locator("#save-status").inner_text()
+          and opage.locator("#notices").get_by_role("button", name="Show Ann’s save").is_visible())
+    opage.locator("#notices").get_by_role("button", name="Show Ann’s save").click(); opage.wait_for_timeout(400)
+    check("clash: her save is shown", ocell(10).input_value() == "2" and ocell(11).input_value() == "")
+    ocell(12).fill("1"); ocell(12).press("Tab"); opage.click("#save-btn")
+    opage.locator("#save-status").filter(has_text=re.compile("^Saved")).wait_for(timeout=30000)
+    check("clash: then saving on top of it doesn't ask again", not asking(opage))
+    wait_for_action()
+    check("clash: both changes kept", saved_month("ann.example", nxt) == {"JOB009683/REVEX": {"1": 3, "3": 1.5, "10": 2, "12": 1}, "Training": {"2": 2}},
+          json.dumps(saved_month("ann.example", nxt)))
+    octx.close()
+
     ctx, page = new_page(browser)
     sign_in(page, "ann.example", r"home\.html")
+    page.wait_for_selector("#sheets table", timeout=30000); page.wait_for_timeout(1500)
+    check("engineer: sees the month the office started", page.locator("#sheets tbody tr", has_text=label_of(later)).count() == 1)
     page.goto(SITE_URL + "timesheet.html?month=2026-11"); wait_ready(page)
     check("engineer: sees the office's change", any("JOB009683" in k and v == {"1": 4, "3": 2.5, "9": 1.5} for k, v in grid(page).items()), json.dumps(grid(page)))
     ctx.close()

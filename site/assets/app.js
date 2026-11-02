@@ -23,6 +23,8 @@ const KEYS = {
   lastName: 'etjm.lastName.v1',
   draft: 'etjm.draft.v4.',
   issue: 'etjm.issue.v4.',
+  write: 'etjm.writeAs.v1.',
+  import: 'etjm.import.v1.',
 };
 
 // Timesheet copies kept by earlier versions of the site (from testing, before the data was
@@ -216,6 +218,79 @@ export const store = {
   },
 };
 
+// The office's "Allow write access" for one engineer, kept for this browser tab only, so it
+// carries between that engineer's My timesheets and months until Stop editing. Saving as
+// them needs their keys, which only admins' sign-ins carry (writeKeys).
+export const writeAccess = {
+  has: (username) => store.get(`${KEYS.write}${username}`, 'session') === true,
+  allow: (username) => store.set(`${KEYS.write}${username}`, true, 'session'),
+  stop: (username) => store.remove(`${KEYS.write}${username}`, 'session'),
+  clearAll() {
+    try {
+      for (const key of Object.keys(sessionStorage)) if (key.startsWith(KEYS.write)) sessionStorage.removeItem(key);
+    } catch { /* storage unavailable */ }
+  },
+};
+
+// A spreadsheet read on My timesheets (New timesheet › My spreadsheet), handed to the
+// timesheet page that opens next. Kept for this tab only, and taken once.
+export const sheetImports = {
+  put: (username, month, value) => store.set(`${KEYS.import}${username}.${month}`, value, 'session'),
+  take(username, month) {
+    const key = `${KEYS.import}${username}.${month}`;
+    const value = store.get(key, 'session');
+    store.remove(key, 'session');
+    return value;
+  },
+};
+
+// What "Allow write access" lets the office do (asked on My timesheets and on a month).
+export const writeAccessText = (person) => `You’ll be able to do anything ${person.name} can on their timesheets: start new ones, `
+  + 'change hours, load a spreadsheet, delete months the office hasn’t closed, and save them as their saved copies. '
+  + 'They’ll see the changes. Hours they’ve typed on their own computer without saving are replaced by your save when they next open that month. '
+  + 'It lasts until you press Stop editing or close this tab.';
+
+// What saving as an engineer needs (their tag and timesheet keys), from an admin's profile.
+export function writerFor(profile, person) {
+  const keys = profile?.writeKeys?.[person.username];
+  if (!keys?.dataKeys?.length) {
+    throw new AppError('no-write-keys', 'The website doesn’t have this engineer’s key yet. Reload in a minute and try again.');
+  }
+  return { ...keys, name: person.name };
+}
+
+// A yes/no question in the page's own dialog (made the first time it's needed). Resolves
+// true for yes; only one question is asked at a time.
+export function askConfirm(title, text, yesLabel) {
+  let dialog = $('#confirm');
+  if (!dialog) {
+    dialog = el('dialog', { id: 'confirm', class: 'dialog', 'aria-labelledby': 'confirm-title' },
+      el('div', { class: 'dialog-head' }, el('h2', { id: 'confirm-title' })),
+      el('div', { class: 'dialog-body' }, el('p', { id: 'confirm-text' }),
+        el('div', { class: 'confirm-actions' },
+          el('button', { id: 'confirm-no', class: 'btn', type: 'button' }, 'Cancel'),
+          el('button', { id: 'confirm-yes', class: 'btn btn-primary', type: 'button' }))));
+    document.body.append(dialog);
+  }
+  if (dialog.open) return Promise.resolve(false);
+  $('#confirm-title').textContent = title;
+  $('#confirm-text').textContent = text;
+  $('#confirm-yes').textContent = yesLabel;
+  return new Promise((resolve) => {
+    const done = (answer) => {
+      $('#confirm-yes').onclick = null;
+      $('#confirm-no').onclick = null;
+      dialog.onclose = null;
+      if (dialog.open) dialog.close();
+      resolve(answer);
+    };
+    $('#confirm-yes').onclick = () => done(true);
+    $('#confirm-no').onclick = () => done(false);
+    dialog.onclose = () => done(false);
+    dialog.showModal();
+  });
+}
+
 export const lastName = {
   get: () => store.get(KEYS.lastName) || '',
   set: (name) => store.set(KEYS.lastName, name),
@@ -281,6 +356,7 @@ export function loadSession() {
 export function clearSession() {
   store.remove(KEYS.session, 'session');
   store.remove(KEYS.session, 'local');
+  writeAccess.clearAll();
 }
 
 // ------------------------------------------------------------ signing in
@@ -741,7 +817,21 @@ export async function openViewAs(bundle, profile, username) {
     const theirs = (month.timesheets || []).find((t) => t.username === username && !t.deleted);
     if (theirs && isMonth(month.month)) months.set(month.month, { month: month.month, savedAt: theirs.savedAt, data: theirs });
   }
-  return { person: { name: employee.name, username, rate: employee.rechargeRate ?? null, active: employee.active !== false }, months };
+  const person = { name: employee.name, username, rate: employee.rechargeRate ?? null, active: employee.active !== false };
+  // The verified copies are updated about a minute after each save. With their keys (admins'
+  // sign-ins carry them), their latest saves (and deletions) show straight away.
+  if (profile.writeKeys?.[username]) {
+    try {
+      for (const item of await listSaved(bundle, writerFor(profile, person), username, { withDeleted: true })) {
+        if ((bundle.closedMonths || []).includes(item.month)) continue; // closed: the frozen copy is what counts
+        const known = months.get(item.month);
+        if (known && (known.savedAt || '') > (item.savedAt || '')) continue;
+        if (item.deleted) months.delete(item.month);
+        else months.set(item.month, item);
+      }
+    } catch { /* the verified copies are enough */ }
+  }
+  return { person, months };
 }
 
 // The username settings.json gives someone by default ("Alex Smith" -> "alex.smith"),
@@ -812,7 +902,7 @@ function totals(data) {
 export { totals as sheetTotals };
 
 // Every month this person has saved to the office (that could be opened with their keys).
-export async function listSaved(bundle, profile, username) {
+export async function listSaved(bundle, profile, username, { withDeleted = false } = {}) {
   const query = `repo:${bundle.dataRepo} is:issue in:title "Timesheet" "${profile.tag}"`;
   const result = await github(bundle, 'GET', `/search/issues?q=${encodeURIComponent(query)}&sort=created&order=desc&per_page=100`);
   const byMonth = new Map();
@@ -820,7 +910,7 @@ export async function listSaved(bundle, profile, username) {
     const match = issue.title.trim().match(/^Timesheet (\d{4}-\d{2}) · ([0-9a-f]{16})$/);
     if (!match || match[2] !== profile.tag || byMonth.has(match[1]) || !isOurs(issue, issue.title.trim())) continue;
     const { data } = await readIssue(issue, profile, username, match[1]);
-    if (data?.deleted) byMonth.set(match[1], null); // deleted by them: not listed
+    if (data?.deleted) byMonth.set(match[1], withDeleted ? { month: match[1], savedAt: data.savedAt, issue: issue.number, deleted: true } : null);
     else if (data) byMonth.set(match[1], { month: match[1], savedAt: data.savedAt, issue: issue.number, data });
   }
   return [...byMonth.values()].filter(Boolean);

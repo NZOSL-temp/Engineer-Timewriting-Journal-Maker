@@ -9,7 +9,7 @@
 import {
   $, el, toast, TASKS, cleanText, fmtHours, parseHours, monthInfo, shiftMonth, thisMonth, isMonth,
   fmtDateTime, drafts, loadSession, openSession, loadSaved, listSaved, saveToGitHub, clearSession,
-  journalLines, journalCells, journalTable, viewAsParam, openViewAs,
+  journalLines, journalCells, journalTable, viewAsParam, openViewAs, askConfirm, writerFor, writeAccess, writeAccessText, sheetImports,
 } from './app.js';
 import { fireworks } from './fireworks.js';
 import { readFirstSheet, timesheetFromSheet } from './xlsx.js';
@@ -751,10 +751,10 @@ function otherAdder() {
 // more are left out, unless `includeClosed` (New timesheet's "Also copy closed jobs").
 async function copyRows(source, { includeClosed = false } = {}) {
   // The newer of the copy on this computer and the office's saved copy (it may have been
-  // changed on another computer since).
-  const local = drafts.get(session.username, source);
-  let data = local?.data;
-  if (state.canSave) {
+  // changed on another computer since). The office, acting for an engineer, uses their saves.
+  const local = state.viewAs ? null : drafts.get(session.username, source);
+  let data = state.viewAs ? state.viewAs.months.get(source)?.data : local?.data;
+  if (state.canSave && !state.viewAs) {
     try {
       const saved = (await loadSaved(state.bundle, state.profile, session.username, source))?.data;
       const localNewer = local?.meta?.dirty && (local.meta.localUpdatedAt || '') > (saved?.savedAt || '');
@@ -831,11 +831,14 @@ async function save() {
   state.saving = true;
   updateStatus();
   const version = state.version;
-  const data = toSaved(new Date().toISOString());
   try {
+    // The office, acting for an engineer: don't silently replace a save of theirs it hasn't seen
+    // (made after this page opened, or before GitHub listed it).
+    if (state.viewAs && !(await nothingNewer())) return;
+    const data = toSaved(new Date().toISOString());
     // The office, with write access, saves as the engineer: with their key, as their saved copy.
     const issue = state.viewAs
-      ? await saveToGitHub(state.bundle, writerFor(state.viewAs.person.username), state.viewAs.person.username, data)
+      ? await saveToGitHub(state.bundle, writerFor(state.profile, state.viewAs.person), state.viewAs.person.username, data)
       : await saveToGitHub(state.bundle, state.profile, session.username, data);
     if (state.viewAs) state.viewAs.months.set(state.month, { month: state.month, savedAt: data.savedAt, data });
     state.meta.savedAt = data.savedAt;
@@ -844,10 +847,12 @@ async function save() {
     persistLocal();
     setNotice('newer-local', null);
     setNotice('sheet', null);
+    setNotice('theirs', null);
     toast('Saved. The journal and workbooks update in about a minute.', { tone: 'ok' });
     fireworks();
   } catch (error) {
-    toast(error.message || 'Saving didn’t work. Your hours are still on this computer.', { tone: 'error', duration: 9000 });
+    toast(error.message || (state.viewAs ? 'Saving didn’t work. Your changes are only on this page: stay on it and try again.'
+      : 'Saving didn’t work. Your hours are still on this computer.'), { tone: 'error', duration: 9000 });
   } finally {
     state.saving = false;
     updateStatus();
@@ -879,6 +884,7 @@ async function openMonth(month) {
   state.info = monthInfo(month);
   state.invalid.clear();
   setNotice('sheet', null);
+  setNotice('theirs', null);
   history.replaceState(null, '', `?month=${month}${state.viewAs ? `&as=${encodeURIComponent(state.viewAs.person.username)}` : ''}`);
   $('#month-label').textContent = state.info.label;
   document.title = `${state.info.label} · Engineer Timewriting`;
@@ -939,6 +945,41 @@ async function openMonth(month) {
   updateStatus();
 }
 
+// Before the office saves as an engineer: true if the month has no save of theirs newer than
+// the one shown. If it has, ask; "Cancel" offers to show their save instead.
+async function nothingNewer() {
+  const { person } = state.viewAs;
+  const first = person.name.split(' ')[0];
+  let latest;
+  try {
+    latest = await loadSaved(state.bundle, writerFor(state.profile, person), person.username, state.month);
+  } catch {
+    return true; // can't check; saving works as before
+  }
+  const theirs = latest?.data;
+  if (!theirs?.savedAt || theirs.savedAt <= (state.meta.savedAt || '')) return true;
+  const label = state.info.label;
+  if (await askConfirm(`${first} saved ${label} at ${fmtDateTime(theirs.savedAt)}`,
+    `That’s newer than what you’re looking at, so saving would replace ${first}’s hours with yours.`, 'Save over it')) return true;
+  setNotice('theirs', {
+    tone: 'warn',
+    text: `${first} saved ${label} at ${fmtDateTime(theirs.savedAt)}, after what you’re looking at. Your changes aren’t saved.`,
+    action: {
+      label: `Show ${first}’s save`,
+      run: () => {
+        state.viewAs.months.set(state.month, { month: state.month, savedAt: theirs.savedAt, data: theirs });
+        state.draft = fromSaved(theirs);
+        state.meta = { savedAt: theirs.savedAt, issue: latest.issue?.number };
+        state.invalid.clear();
+        setNotice('theirs', null);
+        render();
+        updateStatus();
+      },
+    },
+  });
+  return false;
+}
+
 function setBusy(on) {
   const wrap = $('#grid-wrap');
   wrap.classList.toggle('busy', on);
@@ -977,6 +1018,8 @@ async function start() {
         return;
       }
       state.viewAs = await openViewAs(opened.bundle, opened.profile, viewing);
+      // Write access allowed on their My timesheets (or another of their months) carries over.
+      state.adminWrite = writeAccess.has(viewing) && Boolean(opened.profile.writeKeys?.[viewing]);
     } else if (!opened.profile.timesheets) {
       location.replace('admin.html');
       return;
@@ -1045,9 +1088,12 @@ async function start() {
   const requested = params.get('month');
   if (state.viewAs) showViewing();
   await openMonth(isMonth(requested) ? requested : thisMonth());
-  if (state.viewAs) return;
+  if (isReadOnly()) return;
+  // Started from New timesheet: the job template from another month, or a spreadsheet.
   const source = params.get('copyFrom');
   if (isMonth(source) && source !== state.month) await copyRows(source, { includeClosed: params.get('closed') === '1' });
+  const stashed = params.get('fromSheet') === '1' && sheetImports.take(state.viewAs?.person.username ?? session.username, state.month);
+  if (stashed?.result) await useSpreadsheet(stashed.result, stashed.fileName);
 }
 
 function isClosed() {
@@ -1060,12 +1106,6 @@ function isReadOnly() {
   return (Boolean(state.viewAs) && !state.adminWrite) || isClosed();
 }
 
-// What saving as `username` needs (their tag and timesheet keys): admins' sign-ins carry them.
-function writerFor(username) {
-  const writer = state.profile.writeKeys?.[username];
-  if (!writer?.dataKeys?.length) throw new Error('The website doesn’t have this engineer’s key yet. Reload in a minute and try again.');
-  return writer;
-}
 
 function showViewing() {
   const { person } = state.viewAs;
@@ -1101,10 +1141,9 @@ async function allowWriting() {
     toast('The website doesn’t have this engineer’s key yet. Reload in a minute and try again.', { tone: 'warn' });
     return;
   }
-  const yes = await askConfirm(`Allow write access to ${person.name}’s timesheets?`,
-    `You’ll be able to change ${person.name}’s hours (including loading a spreadsheet) and save them as their saved copy. `
-    + 'They’ll see the changes. Hours they’ve typed on their own computer without saving are replaced by your save when they next open that month.', 'Allow write access');
+  const yes = await askConfirm(`Allow write access to ${person.name}’s timesheets?`, writeAccessText(person), 'Allow write access');
   if (!yes) return;
+  writeAccess.allow(person.username);
   state.adminWrite = true;
   showViewing();
   render();
@@ -1113,31 +1152,10 @@ async function allowWriting() {
 
 async function stopWriting() {
   if (state.meta.dirty && !(await askConfirm('Stop editing without saving?', 'Your unsaved changes to this month will be lost.', 'Stop editing'))) return;
+  writeAccess.stop(state.viewAs.person.username);
   state.adminWrite = false;
   showViewing();
   await openMonth(state.month); // back to their last save
-}
-
-// A yes/no question in the page's own dialog. Resolves true for yes.
-function askConfirm(title, text, yesLabel) {
-  const dialog = $('#confirm');
-  if (dialog.open) return Promise.resolve(false); // one question at a time
-  $('#confirm-title').textContent = title;
-  $('#confirm-text').textContent = text;
-  $('#confirm-yes').textContent = yesLabel;
-  return new Promise((resolve) => {
-    const done = (answer) => {
-      $('#confirm-yes').onclick = null;
-      $('#confirm-no').onclick = null;
-      dialog.onclose = null;
-      if (dialog.open) dialog.close();
-      resolve(answer);
-    };
-    $('#confirm-yes').onclick = () => done(true);
-    $('#confirm-no').onclick = () => done(false);
-    dialog.onclose = () => done(false);
-    dialog.showModal();
-  });
 }
 
 // ------------------------------------------------------- from a spreadsheet
@@ -1164,14 +1182,20 @@ async function loadSpreadsheet(file) {
     toast(error.message || 'That spreadsheet couldn’t be read.', { tone: 'error', duration: 9000 });
     return;
   }
-  const { data, notes, name } = result;
+  await useSpreadsheet(result, file.name);
+}
+
+// Put what was read from a spreadsheet into the month (asking first if that replaces anything).
+async function useSpreadsheet(result, fileName) {
+  const { data, name } = result;
+  const notes = [...result.notes];
   if (!data.jobs.length && !data.other.length) {
-    toast(`The first sheet of ${file.name} has no jobs or hours for ${state.info.label}.`, { tone: 'warn', duration: 8000 });
+    toast(`The first sheet of ${fileName} has no jobs or hours for ${state.info.label}.`, { tone: 'warn', duration: 8000 });
     return;
   }
   const hasAnything = state.draft.jobs.length || state.draft.other.length;
   if (hasAnything && !(await askConfirm(`Replace ${state.info.label} with this spreadsheet?`,
-    `Everything in ${state.info.label} is removed and replaced by what’s in ${file.name}. Days left empty in the spreadsheet end up empty here too. `
+    `Everything in ${state.info.label} is removed and replaced by what’s in ${fileName}. Days left empty in the spreadsheet end up empty here too. `
     + 'Nothing is saved until you press Save.', 'Replace'))) return;
   const person = state.viewAs?.person.name ?? session.name;
   if (name && name.toLowerCase() !== person.toLowerCase() && !person.toLowerCase().startsWith(name.toLowerCase().split(' ')[0])) {
@@ -1187,7 +1211,7 @@ async function loadSpreadsheet(file) {
     .reduce((sum, h) => sum + h, 0);
   setNotice('sheet', {
     tone: notes.length ? 'warn' : 'info',
-    title: `Loaded ${file.name}: ${data.jobs.length} job${data.jobs.length === 1 ? '' : 's'}, ${fmtHours(hours)} hours.`,
+    title: `Loaded ${fileName}: ${data.jobs.length} job${data.jobs.length === 1 ? '' : 's'}, ${fmtHours(hours)} hours.`,
     text: 'Check it, then press Save.',
     list: notes.length ? notes : undefined,
   });
