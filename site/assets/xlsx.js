@@ -349,10 +349,7 @@ export function timesheetFromSheet(sheet, month, { jobs = new Map(), otherTime =
   if (guessed.length) {
     notes.push(`The spreadsheet doesn’t say CAPEX or REVEX for ${guessed.length === 1 ? 'job' : 'jobs'} ${guessed.join(', ')}, so ${guessed.length === 1 ? 'its' : 'their'} hours went on REVEX. Move them if they should be CAPEX.`);
   }
-  const closed = [...jobRows.keys()].filter((job) => !jobs.has(job));
-  if (closed.length) {
-    notes.push(`${closed.length === 1 ? 'Job' : 'Jobs'} ${closed.join(', ')} ${closed.length === 1 ? 'isn’t' : 'aren’t'} open in Business Central, so ${closed.length === 1 ? 'it' : 'they'} can’t go in the journal until the office opens ${closed.length === 1 ? 'it' : 'them'}.`);
-  }
+  // (Closed jobs aren't mentioned here: the timesheet page already marks them.)
   const nameRow = rows.slice(0, headerAt).find((row) => /^name\s*:?$/i.test(text(row[0])));
   return { data: { jobs: [...jobRows.values()], other: [...otherRows.values()] }, notes, name: nameRow ? text(nameRow[1]) : '' };
 }
