@@ -28,9 +28,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from etjm_accounts import Keys, load_state_data  # noqa: E402
 from etjm_core import PASSWORD_TITLE_RE, TITLE_RE, parse_master_key, seal, user_tag  # noqa: E402
 from etjm_github import api, commit_and_push, list_issues  # noqa: E402
-from etjm_vault import JOBS, OUTPUT, REPORT, SETTINGS, TIMESHEETS, USERS, Vault  # noqa: E402
+from etjm_mailbox import load_mailbox, save_mailbox  # noqa: E402
+from etjm_vault import JOBS, MAILBOX, OUTPUT, REPORT, SETTINGS, TIMESHEETS, USERS, Vault  # noqa: E402
 
-MANAGED = [SETTINGS, USERS, REPORT, JOBS, TIMESHEETS, OUTPUT]
+MANAGED = [SETTINGS, USERS, REPORT, JOBS, TIMESHEETS, OUTPUT, MAILBOX]
 
 
 def already_rotated(data_dir: Path, new: bytes) -> bool:
@@ -64,6 +65,13 @@ def rotate_files(data_dir: Path, old: bytes, new: bytes) -> int:
             recover["dataKey"] = seal(new_keys.state, old_keys.recover_data_key(username, recover), f"state|recoverDataKey|{username}|{rid}")
     new_vault.write_json(USERS, state)
     count += 1
+    if (data_dir / MAILBOX).exists():  # its sign-in is sealed with a key from MASTER_KEY too
+        mailbox = load_mailbox(old_vault, old_keys)
+        if mailbox:
+            save_mailbox(new_vault, new_keys, mailbox)
+        else:
+            (data_dir / MAILBOX).unlink()  # unreadable anyway: connect the mailbox again
+        count += 1
     for folder in (TIMESHEETS, OUTPUT):
         for month, (rel, data) in old_vault.months(folder).items():
             (data_dir / rel).unlink()

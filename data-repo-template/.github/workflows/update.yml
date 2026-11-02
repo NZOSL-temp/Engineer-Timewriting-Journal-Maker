@@ -1,8 +1,9 @@
 # Runs when the BC report, settings.json or users.json changes, and whenever someone
-# saves a timesheet, changes their password or asks for a password-reset email on the
-# website (all of these arrive as issues). It updates the sign-ins and the website's job
-# list, sends any reset emails, then rebuilds the journals. Every six hours it also runs
-# on its own, to remove password-reset links that have run out.
+# saves a timesheet or changes their password on the website (these arrive as issues). It
+# reads the office mailbox for password-reset requests (people email it from "Forgot your
+# password?"), updates the sign-ins and the website's job list, sends any reset emails, then
+# rebuilds the journals. It also runs on its own, every half hour in New Zealand working
+# hours and hourly otherwise, to answer those emails and remove reset links that have run out.
 name: Update website and journals
 
 on:
@@ -12,7 +13,10 @@ on:
   issues:
     types: [opened, edited, reopened]
   schedule:
-    - cron: "17 */6 * * *"
+    # In UTC: every half hour from 7am to 7pm New Zealand time (6am to 6pm in winter), hourly
+    # the rest of the day. GitHub often starts scheduled runs late, sometimes by an hour.
+    - cron: "7,37 18-23,0-5 * * *"
+    - cron: "7 6-17 * * *"
   workflow_dispatch:
 
 permissions:
@@ -61,6 +65,11 @@ jobs:
           NEW_MASTER_KEY: ${{ secrets.NEW_MASTER_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
         run: python .website/tools/rotate_master_key.py --data-dir . --push
+      - name: Read the office mailbox for password-reset requests
+        env:
+          MASTER_KEY: ${{ secrets.NEW_MASTER_KEY || secrets.MASTER_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python .website/tools/office_mailbox.py --data-dir . check --push
       - name: Update sign-ins and the website's job list
         env:
           MASTER_KEY: ${{ secrets.NEW_MASTER_KEY || secrets.MASTER_KEY }}

@@ -1,0 +1,67 @@
+# Connects the office's Outlook.com mailbox, which "Forgot your password?" uses: people email it
+# to ask for a reset link, and the links are sent from it (see mailbox/README.md in the website
+# repo). Run it from the Actions tab with the Microsoft app registration's Application (client)
+# ID, then open the run and its "Sign in" step, and follow what it says: a code to type at
+# microsoft.com/devicelogin, signed in as the office's Outlook.com account. Tick "disconnect"
+# instead to stop password resets by email.
+name: Connect the office mailbox
+
+on:
+  workflow_dispatch:
+    inputs:
+      client_id:
+        description: "Application (client) ID of the app registration"
+        required: false
+        default: ""
+      disconnect:
+        description: "Disconnect the mailbox instead"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: write
+
+# Not at the same time as "Update website and journals", which also writes the mailbox's file.
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+jobs:
+  mailbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PYTHONUNBUFFERED: "1"
+    steps:
+      # Every action is pinned to an exact commit, so a moved tag can't change what runs.
+      - name: Check out this repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Check out the website repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: NZOSL-temp/Engineer-Timewriting-Journal-Maker
+          ssh-key: ${{ secrets.SITE_DEPLOY_KEY }}
+          path: .website
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install the tools (exact versions, checked against their hashes)
+        run: python -m pip install --disable-pip-version-check --require-hashes --no-deps -r .website/tools/requirements.txt
+      - name: Sign in to the office mailbox (open this step for the code)
+        if: ${{ !inputs.disconnect }}
+        env:
+          MASTER_KEY: ${{ secrets.NEW_MASTER_KEY || secrets.MASTER_KEY }}
+          CLIENT_ID: ${{ inputs.client_id }}
+        run: python .website/tools/office_mailbox.py --data-dir . connect --client-id "$CLIENT_ID" --push
+      - name: Disconnect the office mailbox
+        if: ${{ inputs.disconnect }}
+        env:
+          MASTER_KEY: ${{ secrets.NEW_MASTER_KEY || secrets.MASTER_KEY }}
+        run: python .website/tools/office_mailbox.py --data-dir . disconnect --push
+      - name: Update the website (it then offers or stops offering resets by email)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run update.yml --repo "$GITHUB_REPOSITORY"

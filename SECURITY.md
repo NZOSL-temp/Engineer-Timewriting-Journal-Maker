@@ -50,14 +50,16 @@ it is. Issue titles carry a random-looking tag rather than a name.
 
 ## Forgotten passwords
 
-**Forgot your password?** on the sign-in page sends a hash of the username to the office's
-*reset helper*, a small Google Apps Script (`relay/Code.gs`) running on the office's Google
-account. It checks the hash belongs to a real sign-in and opens a "Password reset request"
-issue in the data repo. The page shows the same answer whatever happens, so it can't be used
-to find out who has a sign-in or an email address.
+**Forgot your password?** on the sign-in page opens a ready-made email from the person to the
+office's Outlook.com mailbox, naming their username. The data repo's Action reads the mailbox
+(every half hour in New Zealand working hours, hourly otherwise) and passes each request on as
+a "Password reset request" issue naming a hash of the username. Anyone can send such an email
+for any username, but the answer only ever goes to the email address the office has for that
+person, and the page says the same whatever happens, so it can't be used to get into someone
+else's sign-in or to find out who has one or an email address.
 
 The Action then makes a **new** user key and timesheet key for that person, and emails them
-a link to `reset.html` through the helper. The link holds a random secret after the `#`, so
+a link to `reset.html` from the office mailbox. The link holds a random secret after the `#`, so
 it never reaches a web server, and the page removes it from the address bar at once. The
 secret opens only a copy of the new user key, published next to their sign-in, and a short
 profile with just enough to send a new password in. When they set one, it's sealed with the
@@ -67,12 +69,20 @@ ones, and the epoch moves on, which signs out anyone who had the old password.
 * The old password keeps working until the link is used, so asking for resets can't lock
   anyone out.
 * A link works once, for an hour, and a newer link replaces it. The Action removes links
-  that have run out, at the latest within six hours (it runs every six hours for that).
-* At most one email per person every 15 minutes, and the helper takes at most 20 requests
-  a day in all.
-* The helper sends email only when asked by the Action, with a request signed with
-  `RELAY_SECRET` (HMAC-SHA256), recent, and not seen before. So nobody else can use it to
-  send email. The token it holds can only open issues in the data repo.
+  that have run out (it runs at least hourly).
+* At most one email per person every 15 minutes, and at most ten requests are answered in
+  each run.
+* The mailbox is connected once, by signing in to Microsoft with a code (the **Connect the
+  office mailbox** workflow), through an app registration that can read and send that
+  mailbox's email (`Mail.Read`, `Mail.Send`). Its sign-in, a refresh token, is kept in the
+  data repo's `mailbox.json`, sealed with a key from `MASTER_KEY` that admins' sign-ins don't
+  carry, so only the Actions can use it. It's swapped for a fresh one weekly; disconnecting
+  deletes it, and the office can also withdraw the app's access on Microsoft's side.
+* The Actions' logs give counts only, and the mailbox's address shortened.
+* Websites set up before the mailbox can use the older *reset helper* instead, a Google Apps
+  Script (`relay/Code.gs`), while no mailbox is connected. It sends email only when asked by
+  the Action with a request signed with `RELAY_SECRET` (HMAC-SHA256), recent, and not seen
+  before, and the token it holds can only open issues in the data repo.
 * As with any reset by email, someone who can read a person's email can reset their
   password. That's why only the office sets email addresses (on the Admin page), and each
   person can check theirs on their **Settings** page.
@@ -122,7 +132,7 @@ ones, and the epoch moves on, which signs out anyone who had the old password.
   spreadsheet** and the Admin page's **Timesheets from spreadsheets** open the .xlsx on the
   engineer's (or admin's) computer; the file isn't uploaded anywhere (what's read is handed from
   My timesheets to the month in that tab's storage). Saving engineers' spreadsheets from the Admin
-  page uses the same `writeKeys`, after the office confirms the list.
+  page uses the same `writeKeys`, after the office presses Allow write access and confirms the list.
 * **No server means no rate limiting or audit of sign-ins.** All GitHub activity made
   through the website shows as the owner of the tokens.
 * **Tokens expire.** Fine-grained tokens have an end date: renew `SAVE_TOKEN` and

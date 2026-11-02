@@ -16,7 +16,7 @@ website's **Admin page** to work with them. How it's all protected is in the web
 | Update the job list | On the website's **Admin** page, drop the **Job Task Overview** export from Business Central into the upload box. It's encrypted in the browser and saved here as `input/report.json`, and the page shows when the website has the new list (about a minute). Don't upload spreadsheets to GitHub directly: they'd be readable, and the Actions ignore them. |
 | Get the journal for Business Central | On the **Admin** page, under **Journals**, download the month's **Journal CSV** (or **View** it first). To get several months at once, tick them and press **Download all journal CSVs** (or **Download all engineer workbooks**). |
 | Fill in a month from a spreadsheet | On the timesheet page, **Load from spreadsheet** (or drop the .xlsx onto the page), or on My timesheets, **New timesheet** › **My spreadsheet**. It reads the first sheet: the engineer's own timesheet layout or the website's engineer workbook. It asks before replacing anything already in the month, and nothing is saved until **Save**. |
-| Load the spreadsheets engineers send in | On the **Admin** page, drop them all (any number of .xlsx files) under **Timesheets from spreadsheets**. Each one's engineer comes from its NAME or file name and its month from its dates (change either if needed). Check the list, then **Save**: it says first which saved months are replaced, and saves each as that engineer's saved copy. |
+| Load the spreadsheets engineers send in | On the **Admin** page, drop them all (any number of .xlsx files) under **Timesheets from spreadsheets**. Each one's engineer comes from its NAME or file name and its month from its dates (change either if needed). Check the list, press **Allow write access**, then **Save**: it says first which saved months are replaced, and saves each as that engineer's saved copy. |
 | Act for an engineer | On the **Admin** page, **View** the engineer, then press **Allow write access** (on their My timesheets or on a month). You can then do anything they can: start new timesheets (copying a template or from their spreadsheet), change hours, load a spreadsheet, delete months that aren't closed, and **Save**; it's stored as their saved copy and they'll see it. **Stop editing** makes it read-only again (so does closing the tab). Closed months can't be changed. |
 | See one engineer's month | On the **Admin** page, under **Engineer workbooks**: laid out like the old "Timewriting 1-For Engineer" sheet. |
 | Check for problems | **View** a month on the **Admin** page: it lists hours on jobs that aren't open, days over 24 hours and missing rates. |
@@ -24,7 +24,8 @@ website's **Admin page** to work with them. How it's all protected is in the web
 | Add an engineer | On the **Admin** page, under **Engineers**, type their name and recharge rate, press **Add engineer**, then **Save changes**. About a minute later their password is in the list (**Show** or **Copy** it to hand over). Their username is `firstname.lastname`. |
 | Give someone a new password | On the **Admin** page, press **New password** next to them, then **Save changes**. This also signs them out everywhere, so use it if a password may have got out. Their new password appears in the list a minute later. |
 | Let people choose their own password | Anyone can use **Settings** → **Change your password** on the website. The office never sees it; the Admin page then shows *Chosen by them*. |
-| Let people reset a forgotten password | Add their email address on the **Admin** page (Engineers, or Office for admins), then **Save changes**. **Forgot your password?** on the sign-in page then emails them a link. It needs the reset helper (see *Secrets and variables* below). |
+| Let people reset a forgotten password | Add their email address on the **Admin** page (Engineers, or Office for admins), then **Save changes**. **Forgot your password?** on the sign-in page then opens an email to the office's mailbox, and they're emailed a link, usually within an hour. It needs the office mailbox connected (next row). |
+| Connect the office mailbox | **Actions** › **Connect the office mailbox** › **Run workflow**, with the Microsoft app registration's client ID; then open the run's **Sign in** step and do what it says. Setting up the app registration is in the website repo's `mailbox/README.md`. Run it again if the log says the mailbox's sign-in has stopped working; tick **Disconnect the mailbox instead** to turn resets by email off. |
 | Remove an engineer | On the **Admin** page, press **Remove** next to them, then **Save changes**. They can't sign in any more, but stay listed under *Former engineers* (and in `settings.json` with `"active": false`) so their past journals keep their rate. **Restore** brings them back. |
 | Change a recharge rate | On the **Admin** page, change the number next to them, then **Save changes**. Every month that isn't closed is rebuilt with the new rate. |
 | Close a month after uploading its journal | On the **Admin** page, under **Journals**, press **Close**. The month's files are frozen: engineers can't change it and rate changes don't affect it. **Reopen** undoes it. |
@@ -43,6 +44,7 @@ Don't edit `output/`, `timesheets/` or `users.json` by hand. `timesheets/` holds
 | `generated/jobs.json` | The job list read from it |
 | `timesheets/<tag>.json` | One month's verified timesheets |
 | `output/<tag>.json` | One month's journal and engineer workbooks |
+| `mailbox.json` | The office mailbox's sign-in, for password resets (sealed again inside; only once it's connected) |
 
 Each is `{"etjm": "encrypted", "v": 1, "data": "…"}`: AES-256-GCM with a key derived from `MASTER_KEY`, tied to the file's path. `<tag>` is a meaningless name, so the file names don't even show which months exist.
 
@@ -63,7 +65,7 @@ git commit -am "Update settings" && git push && rm /tmp/settings.json
 
 ## How it works
 
-1. One Action, **Update website and journals** (`.github/workflows/update.yml`), runs when `input/`, `settings.json` or `users.json` changes, after every save, password change or reset request on the website, and every six hours (to remove reset links that have run out). Its logs and commit messages name nobody.
+1. One Action, **Update website and journals** (`.github/workflows/update.yml`), runs when `input/`, `settings.json` or `users.json` changes, after every save or password change on the website, and on its own every half hour in New Zealand working hours (hourly otherwise), to read the office mailbox for reset requests and remove reset links that have run out. Its logs and commit messages name nobody.
 2. **Sign-ins and job list.** It gives everyone in `settings.json` a sign-in in `users.json`; all its secrets are encrypted with keys derived from `MASTER_KEY`. It applies resets and password changes, and removes leavers. Then it publishes the encrypted sign-ins and the job list to the website. The job list keeps only jobs whose status is in `jobStatuses` (normally `Open`): job number, description, location, owner and CAPEX/REVEX. Costs, consultants, people and rates never leave this repo.
 3. **Saving.** An engineer signs in, fills in the calendar and presses **Save**. Their browser encrypts the month with their own timesheet key and stores it as an issue here. The issue is titled `Timesheet 2026-09 · <random tag>`, so it names nobody, and only that engineer and the Action can read it.
 4. **Journals.** The same Action opens each timesheet issue with its owner's key, and ignores anything that doesn't open or is older than the last verified copy in `timesheets/`. It then rewrites `output/`, encrypted:
@@ -80,7 +82,7 @@ git commit -am "Update settings" && git push && rm /tmp/settings.json
 | `admins` | People who can use the Admin page (upload the report, download journals): `name`, optional `username`, optional `email`. |
 | `otherTime` | The non-job rows engineers can add, like General Time and the leave types. They go in the engineer workbooks, not the journal. |
 | `jobStatuses` | Which job task statuses appear on the website. |
-| `journal.balancingGlAccount` | GL account for each engineer's balancing line. |
+| `journal.balancingGlAccount` | GL account for each engineer's balancing line. Fill it in: there's no default, and the journal's checks say if it's missing. |
 | `journal.monthLabels` | Month names used in Description and Document number (`Sept`, …). |
 | `journal.description`, `journal.documentNumber` | Templates. `{employee}`, `{monthLabel}`, `{yy}`, `{yyyy}`, `{mon}` and `{month}` are filled in. |
 | `journal.dateFormat` | Date format in the CSV (`%d/%m/%Y` gives 30/09/2026). |
@@ -94,8 +96,8 @@ git commit -am "Update settings" && git push && rm /tmp/settings.json
 | `SAVE_TOKEN` | A fine-grained GitHub token with **Issues: read and write** on this repo only. The website uses it to save timesheets and send password changes. | Create a new token, update the secret, then run **Update website and journals** (Actions → Run workflow). Do this if someone leaves on bad terms. |
 | `ADMIN_TOKEN` | A fine-grained GitHub token with **Contents: read and write** and **Actions: read** on this repo only. Only admins' sign-ins can unlock it. The Admin page uses it to upload reports, manage engineers and download journals. | Create a new token, update the secret, then run **Update website and journals**. |
 | `SITE_DEPLOY_KEY` | Lets this repo update the encrypted job list in the website repo (deploy key with write access there). | Rarely needed. Generate a new key pair and replace both halves. |
-| `RELAY_SECRET` | Shared with the reset helper (the Google Apps Script in the website repo's `relay/`), to sign the reset emails it sends. | Delete it from the script's properties and run `setup` there again, then paste the new one here. |
-| `RELAY_URL` (a **variable**, not a secret) | The reset helper's web address, ending `/exec`. While it's set, the sign-in page offers **Forgot your password?** | Delete it to turn reset emails off. |
+| `RELAY_SECRET` (older, optional) | Shared with the reset helper (the Google Apps Script in the website repo's `relay/`), to sign the reset emails it sends. | Delete it from the script's properties and run `setup` there again, then paste the new one here. |
+| `RELAY_URL` (a **variable**, older, optional) | The older reset helper's web address, ending `/exec`. Used for **Forgot your password?** only while no office mailbox is connected. | Delete it to stop using the helper. |
 | `NEW_MASTER_KEY` (only while changing `MASTER_KEY`) | See *Changing MASTER_KEY* below. | Delete it once `MASTER_KEY` has the same value. |
 
 ## Changing MASTER_KEY

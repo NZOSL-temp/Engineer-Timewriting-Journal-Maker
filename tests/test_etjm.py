@@ -78,6 +78,7 @@ def sheet(employee="Ann Example", month="2026-09", jobs=None, other=None, saved=
 def settings(**changes):
     result = load_settings(None)
     result["employees"] = [{"name": "Ann Example", "rechargeRate": 160}, {"name": "Ben Sample", "rechargeRate": 215}]
+    result["journal"]["balancingGlAccount"] = "1234"  # made up
     result.update(changes)
     return result
 
@@ -368,10 +369,10 @@ class JournalTests(unittest.TestCase):
         rows = list(csv.reader(io.StringIO(text.lstrip("﻿"))))
         self.assertEqual(rows[1:], [
             ["Ann Example", "30/09/2026", "480.00", "0.00", "480.00", "", "JOB000012", "Ann Example Timewriting Sept 26", "REVEX", "3", "160", "EngtimewriteSept 26"],
-            ["Ann Example", "30/09/2026", "-480.00", "0.00", "-480.00", "9011", "", "Ann Example Timewriting Sept 26", "", "", "", "EngtimewriteSept 26"],
+            ["Ann Example", "30/09/2026", "-480.00", "0.00", "-480.00", "1234", "", "Ann Example Timewriting Sept 26", "", "", "", "EngtimewriteSept 26"],
             ["Ben Sample", "30/09/2026", "967.50", "0.00", "967.50", "", "JOB000010", "Ben Sample Timewriting Sept 26", "REVEX", "4.5", "215", "EngtimewriteSept 26"],
             ["Ben Sample", "30/09/2026", "430.00", "0.00", "430.00", "", "JOB000011", "Ben Sample Timewriting Sept 26", "CAPEX", "2", "215", "EngtimewriteSept 26"],
-            ["Ben Sample", "30/09/2026", "-1397.50", "0.00", "-1397.50", "9011", "", "Ben Sample Timewriting Sept 26", "", "", "", "EngtimewriteSept 26"],
+            ["Ben Sample", "30/09/2026", "-1397.50", "0.00", "-1397.50", "1234", "", "Ben Sample Timewriting Sept 26", "", "", "", "EngtimewriteSept 26"],
         ])
         self.assertIn("\r\n", text)
 
@@ -404,7 +405,7 @@ class JournalTests(unittest.TestCase):
             ws = openpyxl.load_workbook(journal)["Journal"]
             self.assertEqual(ws["C2"].value, "=K2*J2")
             self.assertEqual(ws["C4"].value, "=-SUM(C2:C3)")
-            self.assertEqual(ws["F4"].value, 9011)
+            self.assertEqual(ws["F4"].value, 1234)
             self.assertEqual(ws["G1"].fill.fgColor.rgb, "FFFFFF00")
             engineer = Path(tmp) / "e.xlsx"
             engineer.write_bytes(files["output/2026-09/Engineer timewriting - Ann Example - September 2026.xlsx"])
@@ -575,14 +576,23 @@ class EncryptedRepoTests(unittest.TestCase):
             self.assertIn("1200", journal)
 
 
+class BalancingAccountTests(unittest.TestCase):
+    def test_no_account_in_the_settings_is_flagged(self):
+        timesheets, _ = collected([issue(1, sheet(employee="Ann Example", jobs=[{"job": "JOB000012", "hours": {"REVEX": {"5": 3}}}]))])
+        lines, warnings = build_journal(timesheets, settings(journal={**settings()["journal"], "balancingGlAccount": ""}), 2026, 9)
+        self.assertIn("No balancing G/L account is set", warnings[0])
+        self.assertEqual(lines[-1].gl, "")
+        self.assertEqual(load_settings(None)["journal"]["balancingGlAccount"], "", "no default: it's the office's own")
+
+
 class SettingsTests(unittest.TestCase):
     def test_defaults_and_validation(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "settings.json"
-            path.write_text(json.dumps({"defaultRechargeRate": 170, "journal": {"balancingGlAccount": "9012"}}))
+            path.write_text(json.dumps({"defaultRechargeRate": 170, "journal": {"balancingGlAccount": "4321"}}))
             loaded = load_settings(path)
             self.assertNotIn("defaultRechargeRate", loaded)
-            self.assertEqual(loaded["journal"]["balancingGlAccount"], "9012")
+            self.assertEqual(loaded["journal"]["balancingGlAccount"], "4321")
             self.assertEqual(loaded["journal"]["dateFormat"], "%d/%m/%Y")
             self.assertEqual(loaded["employees"], [])
             path.write_text(json.dumps({"employees": [{"name": "Ann Example", "rechargeRate": "lots"}]}))

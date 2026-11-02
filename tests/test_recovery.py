@@ -389,6 +389,8 @@ class MasterKeyChangeTests(unittest.TestCase):
             timesheets, _ = collected([sheet(month="2026-09", jobs=[{"job": "JOB000010", "hours": {"REVEX": {"1": 2}}}])])
             files, _ = build_all(timesheets, journal_settings(), {})
             write_tree(vault, files)
+            from etjm_mailbox import load_mailbox, save_mailbox
+            save_mailbox(vault, keys, {"account": "office@example.com", "clientId": "c", "refreshToken": "mail-sign-in", "handled": {}})
             months_before = {f: sorted(vault.months(f)) for f in ("output", "timesheets")}
             self.assertFalse(already_rotated(data, new))
 
@@ -402,6 +404,7 @@ class MasterKeyChangeTests(unittest.TestCase):
                     stale.read(rel)
             self.assertEqual({f: sorted(fresh.months(f)) for f in ("output", "timesheets")}, months_before)
             self.assertEqual(fresh.read_json("settings.json")["employees"][0]["email"], "Ann.Example@Example.com")
+            self.assertEqual(load_mailbox(fresh, Keys(new))["refreshToken"], "mail-sign-in", "the mailbox stays connected")
             moved = fresh.read_json("users.json")
             new_keys = Keys(new)
             for username, record in moved["users"].items():

@@ -62,7 +62,7 @@ DEFAULT_SETTINGS = {
     "jobStatuses": ["Open"],
     "timeZone": "Pacific/Auckland",
     "journal": {
-        "balancingGlAccount": "9011",
+        "balancingGlAccount": "",  # the office's own G/L account: only in the private settings.json
         "dateFormat": "%d/%m/%Y",
         "monthLabels": ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                         "Jul", "Aug", "Sept", "Oct", "Nov", "Dec"],

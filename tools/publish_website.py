@@ -10,9 +10,12 @@ Environment:
   SAVE_TOKEN    fine-grained token, Issues read/write on the data repo only (engineers' Save)
   ADMIN_TOKEN   fine-grained token, Contents read/write + Actions read on the data repo (Admin page)
   GITHUB_TOKEN  the workflow's token, to read and close "Password change" requests
-  RELAY_URL     the reset helper's web address (relay/Code.gs); turns on "Forgot your password?"
-  RELAY_SECRET  shared with the reset helper, to sign the reset emails it sends
   SITE_URL      the website's address, for the links in reset emails
+  RELAY_URL     the older Google reset helper's web address (relay/Code.gs), used for
+  RELAY_SECRET  "Forgot your password?" only while no office mailbox is connected
+
+"Forgot your password?" normally goes through the office's Outlook.com mailbox (connected with
+office_mailbox.py; see etjm_mailbox.py): people email it, and the reset links are sent from it.
 
 In the private data repo (where every file is encrypted, see etjm_vault.py) it updates
 users.json: new people get a sign-in, people the Admin page asked to reset get a new
@@ -53,7 +56,8 @@ from etjm_accounts import (  # noqa: E402
 )
 from etjm_core import bundle_key, decrypt_bundle, encrypt_bundle, parse_master_key, people, read_job_report  # noqa: E402
 from etjm_github import api, commit_and_push, list_issues  # noqa: E402
-from etjm_mail import reset_email, reset_link, send  # noqa: E402
+from etjm_mail import MailboxError, refresh, reset_email, reset_link, send, send_outlook  # noqa: E402
+from etjm_mailbox import load_mailbox, masked, offers_resets  # noqa: E402
 from etjm_vault import JOBS, REPORT, USERS, Vault  # noqa: E402
 
 BUNDLE_PATH = Path("site/data/bundle.enc.json")
@@ -112,9 +116,13 @@ def main() -> int:
         print("::warning::SAVE_TOKEN isn't set, so the website will only keep timesheets on each computer.")
     if any(p["admin"] for p in everyone) and not admin_token:
         print("::warning::ADMIN_TOKEN isn't set, so the Admin page can't upload reports or manage engineers.")
-    if bool(relay_url) != bool(relay_secret):
+    mailbox = load_mailbox(vault, keys)
+    by_mailbox = offers_resets(mailbox)
+    if by_mailbox:
+        print(f"Password resets by email: through the office mailbox ({masked(mailbox['account'])}).")
+    elif bool(relay_url) != bool(relay_secret):
         print("::warning::Password resets by email need both RELAY_URL (a variable) and RELAY_SECRET (a secret).")
-    can_email = bool(relay_url and relay_secret)
+    can_email = by_mailbox or bool(relay_url and relay_secret)
     if save_token:
         try:
             api("GET", f"/repos/{args.data_repo}", save_token)
@@ -191,7 +199,8 @@ def main() -> int:
         if not same:
             bundle_file.write_text(json.dumps(encrypt_bundle(bundle, key, epoch)) + "\n", encoding="utf-8")
         users_file = site_dir / USERS_PATH
-        extra = {"reset": {"url": relay_url}} if can_email else None
+        extra = ({"reset": {"email": mailbox["account"]}} if by_mailbox
+                 else {"reset": {"url": relay_url}} if can_email else None)
         users = public_users(state, keys, profiles, read_json(users_file).get("users") or {}, extra)
         if users != read_json(users_file):
             users_file.write_text(json.dumps(users, indent=1) + "\n", encoding="utf-8")
@@ -206,10 +215,22 @@ def main() -> int:
     # Everything is published, so the links in these emails work (within a minute or so,
     # once GitHub Pages has the new sign-in file; the reset page waits for it).
     sent = failed = 0
+    access = None
+    if result["outbox"] and by_mailbox:
+        try:
+            access = refresh(mailbox["clientId"], mailbox["refreshToken"])["access_token"]
+        except MailboxError as exc:
+            print(f"::warning::The office mailbox couldn't send the password-reset emails ({exc}).")
     for mail in result["outbox"]:
         link = reset_link(site_url, mail["username"], mail["id"], mail["secret"], mail["sent"])
+        subject, text, html_body = reset_email(mail["name"], mail["username"], link, RECOVER_MINUTES)
         try:
-            send(relay_url, relay_secret, mail["email"], *reset_email(mail["name"], mail["username"], link, RECOVER_MINUTES))
+            if by_mailbox:
+                if not access:
+                    raise MailboxError("no sign-in")
+                send_outlook(access, mail["email"], subject, html_body)
+            else:
+                send(relay_url, relay_secret, mail["email"], subject, text, html_body)
             sent += 1
         except Exception as exc:  # noqa: BLE001 - one failure shouldn't stop the others
             failed += 1

@@ -308,7 +308,7 @@ def handle_reset_requests(state: dict, keys: Keys, issues: list[dict], everyone:
             notes.append(f"Password reset request #{number}: not a sign-in with an email address; ignored.")
             continue
         if not can_send:
-            notes.append(f"Password reset request #{number}: reset emails aren't set up (RELAY_URL and RELAY_SECRET); ignored.")
+            notes.append(f"Password reset request #{number}: reset emails aren't set up (no office mailbox or reset helper); ignored.")
             continue
         record = state["users"][username]
         recover = record.get("recover")

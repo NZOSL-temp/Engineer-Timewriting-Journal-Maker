@@ -4,13 +4,14 @@
 //
 // Each file is read here in the browser (see xlsx.js) and never uploaded. Who it's for comes
 // from its NAME or its file name, and its month from its dates; both can be changed. Nothing
-// is saved until the office has checked the list and pressed Save, which says first which
-// saved months it replaces. A month an engineer saves again in the meantime isn't replaced
-// without asking again. Saving uses the engineer's keys, which only admins' sign-ins carry.
+// is saved until the office has pressed "Allow write access" (kept for this tab, until Stop
+// editing) and then Save, which says first which saved months it replaces. A month an
+// engineer saves again in the meantime isn't replaced without asking again. Saving uses the
+// engineer's keys, which only admins' sign-ins carry.
 
 import {
   $, el, toast, TASKS, cleanText, monthInfo, shiftMonth, isMonth, fmtHours, fmtDateTime, askConfirm, writerFor,
-  saveToGitHub, readVerified, savedMonths, defaultUsername, FIRST_MONTH, latestMonth, monthSpan,
+  saveToGitHub, readVerified, savedMonths, defaultUsername, FIRST_MONTH, latestMonth, monthSpan, sheetsWriteAccess,
 } from './app.js';
 import { readFirstSheet, sheetMonth, sheetName, isJobReport, timesheetFromSheet } from './xlsx.js';
 import { fireworks } from './fireworks.js';
@@ -256,8 +257,24 @@ function refresh() {
 
 // ---------------------------------------------------------------- saving
 
+async function allowWriting() {
+  const yes = await askConfirm('Allow write access to save these spreadsheets?',
+    'Save will then store each spreadsheet in this list as that engineer’s timesheet for its month: they’ll see it, and the journal uses it. '
+    + 'You’re still asked before anything is saved, with the saved months it replaces. It lasts until you press Stop editing or close this tab.',
+    'Allow write access');
+  if (!yes) return;
+  sheetsWriteAccess.allow();
+  render();
+  $('#sheets-save')?.focus();
+}
+
+function stopWriting() {
+  sheetsWriteAccess.stop();
+  render();
+}
+
 async function saveAll() {
-  if (saving) return;
+  if (saving || !sheetsWriteAccess.has()) return;
   const ready = rows.filter((r) => r.state === 'ready');
   if (!ready.length) return;
   const replacing = ready.filter((r) => r.existing);
@@ -414,8 +431,15 @@ function render() {
       rows.map((row) => el('tbody', { class: 'bulk-row', dataset: { state: row.state } }, rowLines(row, people))))),
     el('div', { class: 'bulk-bar' },
       el('span', { class: 'bulk-count' }, parts.join(' · ')),
-      el('button', { id: 'sheets-save', class: 'btn btn-primary', type: 'button', disabled: saving || !ready, onclick: saveAll },
-        saving ? 'Saving…' : `Save ${ready ? `${ready} ` : ''}timesheet${ready === 1 ? '' : 's'}`),
+      ...(sheetsWriteAccess.has() || saving ? [
+        el('button', { id: 'sheets-save', class: 'btn btn-primary', type: 'button', disabled: saving || !ready, onclick: saveAll },
+          saving ? 'Saving…' : `Save ${ready ? `${ready} ` : ''}timesheet${ready === 1 ? '' : 's'}`),
+        el('button', { id: 'sheets-stop', class: 'btn', type: 'button', disabled: saving, onclick: stopWriting,
+          title: 'Saving needs Allow write access again' }, 'Stop editing'),
+      ] : [
+        el('button', { id: 'sheets-allow', class: `btn${ready ? ' btn-primary' : ''}`, type: 'button', onclick: allowWriting,
+          title: 'Needed before these can be saved as the engineers’ timesheets' }, 'Allow write access'),
+      ]),
       el('button', { class: 'link-btn', type: 'button', disabled: saving, onclick: () => { rows.length = 0; render(); } }, 'Clear the list')));
   if (focused) box.querySelector(`[data-focus="${focused}"]:not(:disabled)`)?.focus();
 }

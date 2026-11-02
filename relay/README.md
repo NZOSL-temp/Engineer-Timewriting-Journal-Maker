@@ -1,5 +1,9 @@
 # Reset helper (for "Forgot your password?")
 
+> **The older way.** "Forgot your password?" now normally goes through the office's Outlook.com
+> mailbox: see [mailbox/README.md](../mailbox/README.md). This helper is used only while no
+> mailbox is connected.
+
 The website runs on GitHub Pages, which can't send email, and someone who has forgotten their
 password can't reach GitHub. `Code.gs` is a small Google Apps Script that does both for the
 office:

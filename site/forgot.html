@@ -19,7 +19,7 @@
     </div>
     <form id="forgot-form" class="card signin-card" novalidate>
       <h1>Forgot your password?</h1>
-      <p class="muted">Enter your username and we’ll email you a link to choose a new password. It goes to the email address the office has for you.</p>
+      <p id="forgot-intro" class="muted">Enter your username and we’ll email you a link to choose a new password. It goes to the email address the office has for you.</p>
       <label class="field">
         <span>Username</span>
         <input id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="40" placeholder="e.g. alex.smith" required>
@@ -38,6 +38,18 @@
         <li>Nothing arrived? Ask the office for a new password.</li>
       </ul>
       <a class="btn btn-block" href="index.html">Back to sign in</a>
+    </section>
+    <section id="mail" class="card signin-card" hidden aria-labelledby="mail-title">
+      <h1 id="mail-title">Now send the email</h1>
+      <p>Your email app should have opened an email to the office asking for a reset link for <strong id="mail-user"></strong>. Send it from your own email.</p>
+      <p class="muted">No email app opened? Email <strong id="mail-to"></strong> with the subject “<span id="mail-subject"></span>”.</p>
+      <ul class="plain-list muted">
+        <li>The link goes to the email address the office has for you, usually within an hour: the website checks the office’s email every half hour or so. Check your junk folder too.</li>
+        <li>The link works once, for an hour. Your old password keeps working until you use it.</li>
+        <li>Nothing arrived? Ask the office for a new password.</li>
+      </ul>
+      <a id="mail-link" class="btn btn-block" href="index.html">Open the email again</a>
+      <a class="btn btn-ghost btn-block" href="index.html">Back to sign in</a>
     </section>
     <section id="off" class="card signin-card" hidden>
       <h1>Forgot your password?</h1>

@@ -42,6 +42,7 @@ REPORT = "input/report.json"
 JOBS = "generated/jobs.json"
 TIMESHEETS = "timesheets"
 OUTPUT = "output"
+MAILBOX = "mailbox.json"  # the office mailbox's sign-in, for password resets (etjm_mailbox.py)
 
 
 class NotEncrypted(ValueError):

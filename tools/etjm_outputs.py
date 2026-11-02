@@ -75,6 +75,8 @@ def build_journal(timesheets: list[Timesheet], settings: dict, year: int, month:
     document = _format(cfg["documentNumber"], "documentNumber", employee="", **tokens)
     lines: list[JournalLine] = []
     warnings: list[str] = []
+    if not str(cfg.get("balancingGlAccount") or "").strip():
+        warnings.append("No balancing G/L account is set (journal.balancingGlAccount in settings.json), so the balancing lines have none.")
     for ts in sorted(timesheets, key=lambda t: name_key(t.employee)):
         worked = [line for line in ts.jobs if line.total > 0]
         if not worked:

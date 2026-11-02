@@ -239,6 +239,16 @@ export const writeAccess = {
   },
 };
 
+// The office's "Allow write access" for Admin › Timesheets from spreadsheets (saving the
+// spreadsheets engineers sent as their timesheets), kept for this tab like the one above and
+// cleared with it.
+const SHEETS_WRITE = `${KEYS.write}*spreadsheets`;
+export const sheetsWriteAccess = {
+  has: () => store.get(SHEETS_WRITE, 'session') === true,
+  allow: () => store.set(SHEETS_WRITE, true, 'session'),
+  stop: () => store.remove(SHEETS_WRITE, 'session'),
+};
+
 // A spreadsheet read on My timesheets (New timesheet › My spreadsheet), handed to the
 // timesheet page that opens next. Kept for this tab only, and taken once.
 export const sheetImports = {
@@ -560,20 +570,36 @@ export function holdToShow(button, inputs) {
 
 // ------------------------------------------------------- forgotten passwords
 //
-// "Forgot your password?" asks the office's reset helper (relay/Code.gs) for an email.
-// The data repo's Action then makes new keys for that person and emails a link holding a
-// secret, after the # so it never reaches a web server. The secret opens only a copy of the
-// new user key, published next to their sign-in, and a short-lived profile with just enough
-// to send a new password (see etjm_accounts.py). Their old password works until then.
+// "Forgot your password?" emails the office's mailbox (tools/etjm_mailbox.py), which the data
+// repo's Action reads; or, on websites set up with the older Google reset helper
+// (relay/Code.gs), asks that. Either way the Action then makes new keys for that person and
+// emails a link holding a secret, after the # so it never reaches a web server. The secret opens
+// only a copy of the new user key, published next to their sign-in, and a short-lived profile
+// with just enough to send a new password (see etjm_accounts.py). Their old password works
+// until then.
 
+const EMAIL_ADDRESS = /^[^@\s<>"',;:()[\]?&#%]+@[^@\s<>"',;:()[\]?&#%]+\.[^@\s<>"',;:()[\]?&#%]+$/;
+
+// How "Forgot your password?" works here: { email } (email the office's mailbox), { url } (the
+// older reset helper), or null if it isn't switched on.
 export async function resetHelper() {
   const users = await fetchJSON(USERS_URL, 'sign-in list');
-  return typeof users.reset?.url === 'string' && users.reset.url.startsWith('https://') ? users.reset.url : null;
+  if (typeof users.reset?.email === 'string' && EMAIL_ADDRESS.test(users.reset.email)) return { email: users.reset.email };
+  return typeof users.reset?.url === 'string' && users.reset.url.startsWith('https://') ? { url: users.reset.url } : null;
 }
 
-// Ask for a reset email. It says nothing about whether the username exists.
+// The email asking the office's mailbox for a reset link: { href (a mailto: link), subject }.
+// The Action reads the username from the subject (or from the "Username:" line).
+export function resetRequestEmail(mailbox, username) {
+  const name = normalizeUsername(username);
+  const subject = `Engineer Timewriting password reset: ${name}`;
+  const body = `Please email me a link to choose a new password for my Engineer Timewriting sign-in.\n\nUsername: ${name}\n`;
+  return { href: `mailto:${mailbox}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`, subject };
+}
+
+// Ask the older reset helper for a reset email. It says nothing about whether the username exists.
 export async function requestReset(username) {
-  const url = await resetHelper();
+  const url = (await resetHelper())?.url;
   if (!url) throw new AppError('no-reset', 'Password reset by email isn’t switched on yet. Ask the office for a new password.');
   const uid = await sha256Hex(`etjm-user:${normalizeUsername(username)}`);
   try {

@@ -10,6 +10,7 @@ import {
   $, el, toast, TASKS, cleanText, fmtHours, parseHours, monthInfo, shiftMonth, thisMonth, isMonth,
   fmtDateTime, drafts, loadSession, openSession, loadSaved, listSaved, saveToGitHub, clearSession,
   journalLines, journalCells, journalTable, viewAsParam, openViewAs, askConfirm, writerFor, writeAccess, writeAccessText, sheetImports,
+  FIRST_MONTH, latestMonth, monthSpan,
 } from './app.js';
 import { fireworks } from './fireworks.js';
 import { readFirstSheet, timesheetFromSheet } from './xlsx.js';
@@ -164,7 +165,7 @@ function updateStatus() {
       : `${first} hasn’t saved ${state.info.label} (read-only)`;
     status.dataset.tone = 'muted';
     button.hidden = true;
-    for (const id of ['#prev-month', '#next-month']) $(id).disabled = false;
+    updateArrows();
     return;
   }
   button.hidden = false;
@@ -184,7 +185,24 @@ function updateStatus() {
   button.disabled = state.saving || state.loading || isClosed();
   button.textContent = state.saving ? 'Saving…' : 'Save';
   button.classList.toggle('attention', Boolean(state.meta.dirty && state.canSave));
-  for (const id of ['#prev-month', '#next-month']) $(id).disabled = state.saving;
+  updateArrows();
+}
+
+// The ‹ › arrows go from September 2026 (the first month on the website) to next month, as
+// New timesheet does. A month outside that (opened from a link) steps back into it.
+function stepFrom(month, delta) {
+  const target = shiftMonth(month, delta);
+  if (delta < 0) return target < FIRST_MONTH ? null : (target > latestMonth() ? latestMonth() : target);
+  return target > latestMonth() ? null : (target < FIRST_MONTH ? FIRST_MONTH : target);
+}
+
+function updateArrows() {
+  for (const [id, delta] of [['#prev-month', -1], ['#next-month', 1]]) {
+    const button = $(id);
+    const end = !state.month || !stepFrom(state.month, delta);
+    button.disabled = state.saving || end;
+    button.title = end ? `Timesheets go from ${monthSpan()}` : '';
+  }
 }
 
 // ----------------------------------------------------------------- the grid
@@ -999,11 +1017,12 @@ function useSaved(saved, rerender = true) {
 }
 
 async function goMonth(delta) {
-  if (state.saving) return;
+  const target = stepFrom(state.month, delta);
+  if (state.saving || !target) return;
   // The office's changes aren't kept on this computer, so moving away would lose unsaved ones.
   if (state.viewAs && state.adminWrite && state.meta.dirty
     && !(await askConfirm(`Leave ${state.info.label} without saving?`, `Your unsaved changes to ${state.viewAs.person.name}’s ${state.info.label} will be lost.`, 'Leave without saving'))) return;
-  openMonth(shiftMonth(state.month, delta));
+  openMonth(target);
 }
 
 // -------------------------------------------------------------------- start

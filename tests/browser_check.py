@@ -37,6 +37,7 @@ import openpyxl  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
 
 from etjm_accounts import Keys  # noqa: E402
+from etjm_mailbox import requested_username, save_mailbox  # noqa: E402
 from etjm_vault import Vault  # noqa: E402
 
 PORT = 8769
@@ -52,7 +53,7 @@ SITE = SITE_REPO / "site"
 vault = Vault(DATA, MASTER)
 vault.write_json("settings.json", {
     "employees": [{"name": "Ann Example", "rechargeRate": 160}, {"name": "Ben Sample", "rechargeRate": 215}],
-    "admins": [{"name": "Dee Office"}], "closedMonths": [],
+    "admins": [{"name": "Dee Office"}], "closedMonths": [], "journal": {"balancingGlAccount": "1234"},
 })
 report = openpyxl.Workbook()
 report.active.append(["Project No.", "Job Description", "Job Location", "Owner", "Project Task No.", "Status"])
@@ -62,6 +63,8 @@ for no, desc, task in (("JOB009683", "Wharfline log yard review", "REVEX"), ("JO
 buf = io.BytesIO(); report.save(buf); raw = buf.getvalue()
 vault.write_json("input/report.json", {"name": "Job Task Overview - test.xlsx", "sha256": hashlib.sha256(raw).hexdigest(),
                                        "uploaded": "2026-10-01", "xlsx": base64.b64encode(raw).decode()})
+save_mailbox(vault, Keys(MASTER), {"v": 1, "account": "office@example.com", "clientId": "1a2b3c4d-1a2b-1a2b-1a2b-1a2b3c4d5e6f",
+                                   "refreshToken": "not-a-real-sign-in", "renewed": "2026-11-01T00:00:00Z", "handled": {}})
 
 lock = threading.Lock()
 issues: list[dict] = []
@@ -467,6 +470,20 @@ with sync_playwright() as p:
     check("reader: a file that isn't a spreadsheet", "isn’t an Excel" in (read_in_page(page, tmp / "not.xlsx").get("error") or ""))
     ctx.close()
 
+    # ---- Forgot your password? opens an email to the office's mailbox
+    ctx, page = new_page(browser)
+    page.goto(SITE_URL + "forgot.html"); page.wait_for_timeout(800)
+    check("forgot: offers to email the office", page.locator("#submit").inner_text() == "Write the email"
+          and "email app" in page.locator("#forgot-intro").inner_text(), page.locator("#submit").inner_text())
+    page.fill("#username", "Ann.Example"); page.click("#submit"); page.wait_for_timeout(600)
+    href = page.locator("#mail-link").get_attribute("href") or ""
+    asked = urllib.parse.parse_qs(href.split("?", 1)[-1])
+    check("forgot: the email goes to the office and names the username", href.startswith("mailto:office@example.com?")
+          and asked.get("subject") == ["Engineer Timewriting password reset: ann.example"] and "Username: ann.example" in asked.get("body", [""])[0]
+          and page.locator("#mail").is_visible() and "office@example.com" in page.locator("#mail").inner_text(), href)
+    check("forgot: ...in a form the Action reads back", requested_username(asked.get("subject", [""])[0], asked.get("body", [""])[0]) == "ann.example")
+    ctx.close()
+
     # ---- An engineer loads their own spreadsheet
     ctx, page = new_page(browser)
     sign_in(page, "ann.example", r"home\.html")
@@ -787,6 +804,12 @@ with sync_playwright() as p:
     check("bulk: a file that isn't a spreadsheet, and the job report, are explained",
           "isn’t an Excel" in rows.get("not.xlsx", {}).get("status", "") and "Job Task Overview report" in rows.get(the_report.name, {}).get("status", ""),
           json.dumps([rows.get("not.xlsx"), rows.get(the_report.name)]))
+    check("bulk: nothing can be saved before Allow write access", page.locator("#sheets-save").count() == 0
+          and page.locator("#sheets-allow").is_visible())
+    page.click("#sheets-allow"); page.wait_for_timeout(300)
+    asked = page.locator("#confirm").inner_text() if asking(page) else ""
+    check("bulk: Allow write access asks first", "Allow write access to save these spreadsheets?" in asked, asked)
+    page.click("#confirm-yes"); page.wait_for_timeout(300)
     check("bulk: Save counts only the ones ready", page.locator("#sheets-save").inner_text() == "Save 2 timesheets", page.locator("#sheets-save").inner_text())
     bulk_row(page, nobody.name).locator("select").first.select_option("ben.sample")
     bulk_settled(page, 7)
@@ -870,6 +893,8 @@ with sync_playwright() as p:
     page.wait_for_selector("table.journals tbody tr", timeout=30000)
     page.set_input_files("#sheet-files", [str(ben_nov)])
     bulk_settled(page, 1)
+    check("bulk: write access lasts for the tab, after reloading the page", page.locator("#sheets-save").count() == 1
+          and page.locator("#sheets-allow").count() == 0)
     b = bulk_rows(page)[ben_nov.name]
     check("bulk: a spreadsheet already saved like that: No change, nothing to save", b["state"] == "same" and "No change" in b["status"]
           and page.locator("#sheets-save").is_disabled(), json.dumps(b))
@@ -884,6 +909,27 @@ with sync_playwright() as p:
     page.locator("#sheets-save", has_text=re.compile("^Save")).wait_for(timeout=60000)
     month_row.filter(has_text="2 engineers").wait_for(timeout=90000)
     check("bulk: the journals list updates by itself once the Action has run", "2 engineers" in month_row.inner_text())
+    page.click("#sheets-stop"); page.wait_for_timeout(300)
+    check("bulk: Stop editing takes Save away again", page.locator("#sheets-save").count() == 0 and page.locator("#sheets-allow").is_visible())
+    ctx.close()
+
+    # ---- The ‹ › arrows go from September 2026 to next month
+    ctx, page = new_page(browser)
+    sign_in(page, "ben.sample", r"home\.html")
+    page.goto(SITE_URL + "timesheet.html?month=2026-09"); wait_ready(page)
+    check("arrows: none before September 2026", page.locator("#prev-month").is_disabled() and page.locator("#next-month").is_enabled())
+    page.click("#next-month"); page.wait_for_timeout(1000)
+    check("arrows: › goes to the next month", "month=2026-10" in page.url and "October 2026" in page.locator("#month-label").inner_text())
+    page.goto(SITE_URL + f"timesheet.html?month={months_from_now(1)}"); wait_ready(page)
+    check("arrows: none after next month", page.locator("#next-month").is_disabled() and page.locator("#prev-month").is_enabled())
+    page.goto(SITE_URL + "timesheet.html?month=2026-05"); wait_ready(page)
+    page.click("#next-month"); page.wait_for_timeout(1000)
+    check("arrows: from a month outside, › comes back to September 2026", "month=2026-09" in page.url)
+    ctx.close()
+    ctx, page = new_page(browser)
+    sign_in(page, "dee.office", r"admin\.html")
+    page.goto(SITE_URL + "timesheet.html?month=2026-09&as=ann.example"); wait_ready(page)
+    check("arrows: the same when the office views a timesheet", page.locator("#prev-month").is_disabled() and page.locator("#next-month").is_enabled())
     ctx.close()
 
     # A job list cut off on the way (as when someone leaves a page while it loads) says so; it
