@@ -835,7 +835,7 @@ body.drop-over::after { content: "Drop the spreadsheet to load it"; position: fi
 .bulk-table tbody th[scope="row"] { width: 26%; }
 .bulk-table .num { white-space: nowrap; }
 .bulk-file { display: block; font-weight: 650; overflow-wrap: anywhere; }
-.bulk-table select { max-width: 190px; }
+.bulk-table select { max-width: 240px; }
 .bulk-status { width: 30%; }
 .bulk-status .chip { margin-right: 0; }
 .bulk-status .row-note { margin-top: 4px; }

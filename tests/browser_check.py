@@ -893,11 +893,13 @@ with sync_playwright() as p:
     cut = re.compile(r".*/data/bundle\.enc\.json.*")
     page.route(cut, lambda route, request: route.fulfill(body='{"epoch": 1, "data": "cut o', content_type="application/json"))
     page.goto(SITE_URL + "home.html"); page.wait_for_timeout(1500)
+    said = page.locator("#notices").inner_text() if page.locator("#notices").count() else ""
     check("a job list cut off on the way says so, and doesn't sign anyone out", page.url.endswith("home.html")
-          and "Couldn’t load the job list" in page.locator("#notices").inner_text(), f"{page.url} {page.locator('#notices').inner_text()}")
+          and "Couldn’t load the job list" in said, f"{page.url} {said}")
     page.unroute(cut)
-    page.goto(SITE_URL + "timesheet.html?month=2026-11"); wait_ready(page)
-    check("...and they're still signed in", "timesheet.html" in page.url)
+    page.goto(SITE_URL + "timesheet.html?month=2026-11")
+    page.wait_for_timeout(2500)
+    check("...and they're still signed in", "timesheet.html" in page.url and page.locator("#grid-wrap:not([hidden])").count() == 1, page.url)
     ctx.close()
 
     # A non-admin can't get write access to someone else's
