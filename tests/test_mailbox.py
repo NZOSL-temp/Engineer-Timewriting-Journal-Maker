@@ -212,6 +212,35 @@ class SignInTests(unittest.TestCase):
                 etjm_mail.finish_device_sign_in(CLIENT, {"device_code": "d", "interval": 1}, sleep=lambda s: None, clock=lambda: 0)
 
 
+class CommandLineTests(unittest.TestCase):
+    """The commands exactly as the data repo's workflows run them."""
+
+    def run_tool(self, data_dir, *args):
+        env = {**os.environ, "MASTER_KEY": base64.b64encode(MASTER).decode()}
+        env.pop("GITHUB_TOKEN", None)
+        return subprocess.run([sys.executable, str(TOOLS / "office_mailbox.py"), "--data-dir", str(data_dir), *args],
+                              env=env, capture_output=True, text=True)
+
+    def test_the_workflow_commands(self):
+        root = Path(__file__).resolve().parents[1] / "data-repo-template/.github/workflows"
+        self.assertIn("office_mailbox.py --data-dir . check --push", (root / "update.yml").read_text())
+        mailbox_yml = (root / "mailbox.yml").read_text()
+        self.assertIn('office_mailbox.py --data-dir . connect --client-id "$CLIENT_ID" --push', mailbox_yml)
+        self.assertIn("office_mailbox.py --data-dir . disconnect --push", mailbox_yml)
+        with tempfile.TemporaryDirectory() as tmp:
+            done = self.run_tool(tmp, "check", "--push")  # as "Update website and journals" runs it
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("isn't connected", done.stdout)
+            done = self.run_tool(tmp, "connect", "--client-id", "not-an-id", "--push")  # as "Connect the office mailbox" does
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("Application (client) ID", done.stderr)
+            self.assertNotIn("unrecognized arguments", done.stderr)
+            save_mailbox(Vault(Path(tmp), MASTER), Keys(MASTER), box())
+            done = self.run_tool(tmp, "disconnect")
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertFalse((Path(tmp) / MAILBOX).exists())
+
+
 class MicrosoftStub(http.server.BaseHTTPRequestHandler):
     """Microsoft's sign-in and Graph, as far as the website uses them."""
 

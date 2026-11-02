@@ -41,11 +41,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--data-dir", default=".", help="checkout of the data repo")
     parser.add_argument("--push", action="store_true", help="commit and push mailbox.json")
+    # The same options after the command too ("check --push"), without undoing ones given before it.
+    either = argparse.ArgumentParser(add_help=False)
+    either.add_argument("--data-dir", default=argparse.SUPPRESS, help="checkout of the data repo")
+    either.add_argument("--push", action="store_true", default=argparse.SUPPRESS, help="commit and push mailbox.json")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("check", help="read the mailbox for reset requests")
-    connecting = commands.add_parser("connect", help="sign the mailbox in")
+    commands.add_parser("check", parents=[either], help="read the mailbox for reset requests")
+    connecting = commands.add_parser("connect", parents=[either], help="sign the mailbox in")
     connecting.add_argument("--client-id", required=True, help="the app registration's Application (client) ID")
-    commands.add_parser("disconnect", help="forget the mailbox")
+    commands.add_parser("disconnect", parents=[either], help="forget the mailbox")
     args = parser.parse_args()
     try:
         keys = Keys(parse_master_key(os.environ.get("MASTER_KEY", "")))
