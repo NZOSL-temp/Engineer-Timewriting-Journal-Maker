@@ -10,6 +10,7 @@ import {
 } from './app.js';
 import { fireworks } from './fireworks.js';
 import { setUpBulkLoad, settingsChanged } from './bulk.js';
+import { sheetTops } from './xlsx.js';
 
 const session = loadSession();
 if (!session?.uk) location.replace('index.html?next=admin.html');
@@ -27,51 +28,24 @@ function notice(tone, text) {
 
 // ------------------------------------------------------------- the report
 
-// Read one file out of the .xlsx (a zip) so we can check it's the right report.
-async function zipText(bytes, wanted) {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  let end = -1;
-  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i -= 1) {
-    if (view.getUint32(i, true) === 0x06054b50) {
-      end = i;
-      break;
-    }
-  }
-  if (end < 0) throw new Error('not a zip');
-  const count = view.getUint16(end + 10, true);
-  let at = view.getUint32(end + 16, true);
-  const names = new TextDecoder();
-  for (let n = 0; n < count; n += 1) {
-    if (view.getUint32(at, true) !== 0x02014b50) throw new Error('not a zip');
-    const method = view.getUint16(at + 10, true);
-    const size = view.getUint32(at + 20, true);
-    const nameLength = view.getUint16(at + 28, true);
-    const skip = nameLength + view.getUint16(at + 30, true) + view.getUint16(at + 32, true);
-    const local = view.getUint32(at + 42, true);
-    if (names.decode(bytes.subarray(at + 46, at + 46 + nameLength)) === wanted) {
-      const start = local + 30 + view.getUint16(local + 26, true) + view.getUint16(local + 28, true);
-      const data = bytes.subarray(start, start + size);
-      if (method === 0) return new TextDecoder().decode(data);
-      if (method === 8) return new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();
-      return null;
-    }
-    at += 46 + skip;
-  }
-  return null;
-}
-
-const unescapeXml = (text) => text.replace(/&(amp|lt|gt|quot|apos|#\d+);/g, (m, e) => (
-  { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }[e] ?? String.fromCharCode(Number(e.slice(1)))));
-
-// The report's column headings that are missing (null if this browser can't check), and
-// whether the file looks like an engineer's timesheet instead (it has a "Job Number" heading).
+// The report's column headings that are missing, and whether the file looks like an
+// engineer's timesheet instead (it has a "Job Number" heading). Like the Action
+// (read_job_report in tools/etjm_core.py), it looks at the first 25 rows of every sheet,
+// whether the headings are stored as shared or inline text.
 async function missingColumns(bytes) {
-  if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) throw new Error('not a zip');
-  if (typeof DecompressionStream !== 'function') return { missing: null };
-  const text = (await zipText(bytes, 'xl/sharedStrings.xml')) ?? (await zipText(bytes, 'xl/worksheets/sheet1.xml'));
-  if (text == null) return { missing: null };
-  const found = new Set([...text.matchAll(/<t(?:\s[^>]*)?>([^<]*)<\/t>/g)].map((m) => unescapeXml(m[1]).replace(/\s+/g, ' ').trim().toLowerCase()));
-  return { missing: REQUIRED.filter((name) => !found.has(name.toLowerCase())), timesheet: found.has('job number') };
+  const key = (value) => String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  let best = REQUIRED;
+  let timesheet = false;
+  for (const sheet of await sheetTops(bytes, 25)) {
+    for (const row of sheet.rows) {
+      const found = new Set(row.map(key));
+      if (found.has('job number')) timesheet = true;
+      const missing = REQUIRED.filter((name) => !found.has(key(name)));
+      if (missing.length < best.length) best = missing;
+      if (!missing.length) return { missing: [], timesheet: false };
+    }
+  }
+  return { missing: best, timesheet };
 }
 
 function step(id, text, tone = 'busy') {
@@ -129,8 +103,8 @@ async function upload(file) {
     let checked;
     try {
       checked = await missingColumns(bytes);
-    } catch {
-      throw new Error('That file can’t be opened as an Excel .xlsx file.');
+    } catch (error) {
+      throw new Error(error.message || 'That file can’t be opened as an Excel .xlsx file.');
     }
     const { missing, timesheet } = checked;
     if (missing?.length && timesheet) {
@@ -300,9 +274,9 @@ const monthsLabel = (chosen) => (chosen.length === 1 ? monthInfo(chosen[0].month
   : `${monthInfo(chosen[0].month).label} to ${monthInfo(chosen[chosen.length - 1].month).label}`);
 
 function downloadJournals(chosen) {
-  const csvs = chosen.map((m) => m.csv).filter(Boolean);
-  if (csvs.length === 1) download(csvs[0]);
-  else saveBlob(makeZip(csvs), `Timewriting journals - ${monthsLabel(chosen)}.zip`);
+  const journals = chosen.map((m) => m.journal).filter(Boolean);
+  if (journals.length === 1) download(journals[0]);
+  else saveBlob(makeZip(journals), `Timewriting journals - ${monthsLabel(chosen)}.zip`);
 }
 
 function downloadWorkbooks(chosen) {
@@ -397,8 +371,13 @@ async function loadJournals() {
         const short = files.find((g) => g.name === f.name.replace(/\.xlsx$/, HOURS_ONLY));
         return includeEmptyJobs() || !short ? f : { name: f.name, data: short.data };
       };
-      return { month, files, csv: files.find((f) => f.name.endsWith('.csv')), workbooks, pick,
-        closed: (state.settings?.closedMonths || []).includes(month) };
+      // The journal as an Excel workbook, laid out like "Timewriting Journal - Sep 2026.xlsx".
+      const journal = files.find((f) => f.name.startsWith('Timewriting Journal') && f.name.endsWith('.xlsx'));
+      // What the Action found to check (jobs that aren't open, a CAPEX/REVEX the job isn't open
+      // for, days over 24 hours, missing rates): listed in the month's README.
+      const readme = files.find((f) => f.name === 'README.md');
+      const checks = readme ? (new TextDecoder().decode(readme.data).split('## Checks')[1] || '').split('\n').filter((l) => l.startsWith('- ')).length : 0;
+      return { month, files, journal, checks, workbooks, pick, closed: (state.settings?.closedMonths || []).includes(month) };
     });
 
     // Ticking months swaps each month's download buttons for "Download all" buttons under the list.
@@ -419,12 +398,12 @@ async function loadJournals() {
       allTick.indeterminate = chosen.length > 0 && chosen.length < list.length;
       bulk.hidden = !chosen.length;
       if (!chosen.length) return;
-      const csvs = chosen.filter((m) => m.csv).length;
+      const journals = chosen.filter((m) => m.journal).length;
       const workbooks = chosen.reduce((sum, m) => sum + m.workbooks.length, 0);
       bulk.replaceChildren(
         el('span', { class: 'bulk-count' }, `${chosen.length} month${chosen.length === 1 ? '' : 's'} ticked`),
-        el('button', { class: 'btn btn-primary', type: 'button', disabled: !csvs, onclick: () => downloadJournals(chosen) },
-          'Download all journal CSVs'),
+        el('button', { class: 'btn btn-primary', type: 'button', disabled: !journals, onclick: () => downloadJournals(chosen) },
+          'Download all journals (Excel)'),
         el('button', { class: 'btn', type: 'button', disabled: !workbooks, onclick: () => downloadWorkbooks(chosen) },
           'Download all engineer workbooks'),
         el('button', { class: 'link-btn', type: 'button', onclick: () => { selected.clear(); refresh(); } }, 'Clear'));
@@ -435,7 +414,7 @@ async function loadJournals() {
       refresh();
     });
 
-    const rows = list.map(({ month, files, csv, workbooks, pick, closed }) => {
+    const rows = list.map(({ month, files, journal, checks, workbooks, pick, closed }) => {
       const tick = el('input', { type: 'checkbox', class: 'pick', 'aria-label': `Tick ${monthInfo(month).label}`, onchange: (e) => {
         if (e.currentTarget.checked) selected.add(month); else selected.delete(month);
         refresh();
@@ -445,9 +424,11 @@ async function loadJournals() {
         el('th', { scope: 'row' }, el('label', { class: 'month-pick' }, tick,
           el('span', {}, monthInfo(month).label,
             closed ? el('span', { class: 'chip chip-muted chip-inline' }, 'Closed') : null,
+            checks ? el('button', { class: 'chip chip-error chip-inline check-chip', type: 'button', title: 'See what to check (View)',
+              onclick: (e) => showJournal(e.currentTarget.closest('tr'), month, files) }, `${checks} to check`) : null,
             el('span', { class: 'row-note' }, `${workbooks.length} engineer${workbooks.length === 1 ? '' : 's'}`)))),
         el('td', { class: 'download-cell' },
-          csv && el('button', { class: 'btn btn-sm btn-primary', type: 'button', onclick: () => download(csv) }, 'Journal CSV'),
+          journal && el('button', { class: 'btn btn-sm btn-primary', type: 'button', onclick: () => download(journal) }, 'Journal (Excel)'),
           workbooks.length ? el('details', { class: 'workbooks', name: 'workbooks' }, el('summary', { class: 'btn btn-sm' }, 'Engineer workbooks'),
             el('div', { class: 'workbook-list' },
               workbooks.length > 1 ? el('button', { class: 'link-btn link-all', type: 'button', onclick: () => downloadAll(month, workbooks.map(pick)) }, `All (${workbooks.length}, as one .zip)`) : null,

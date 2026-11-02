@@ -392,8 +392,8 @@ class JournalTests(unittest.TestCase):
         self.assertIn("output/2026-09/Engineer timewriting - Ann Example - September 2026.xlsx", names)
         self.assertIn("timesheets/2026-09/ann.example.json", names)
         month_checks = " ".join(checks["2026-09"])
-        self.assertIn("JOB000012 is open for CAPEX, not REVEX", month_checks)
-        self.assertIn("JOB000013 REVEX (2 h) is not in the current list", month_checks)
+        self.assertIn("JOB000012 is only open for CAPEX in the Job Task Overview report, not REVEX", month_checks)
+        self.assertIn("JOB000013 REVEX (2 h): the job's Status isn't Open", month_checks)
         self.assertIn("25 hours entered", month_checks)
 
         again, _ = build_all(timesheets, settings(), jobs_index)

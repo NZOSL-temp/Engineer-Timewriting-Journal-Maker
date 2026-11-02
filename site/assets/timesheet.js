@@ -129,6 +129,7 @@ function renderNotices() {
   box.replaceChildren(...[...state.notices.values()].map((n) => el('div', { class: `notice notice-${n.tone}` },
     el('div', { class: 'notice-text' }, n.title ? el('strong', {}, n.title, ' ') : null, n.text),
     n.list ? el('ul', { class: 'notice-list' }, n.list.map((item) => el('li', {}, item))) : null,
+    n.controls ? el('div', { class: 'notice-controls' }, n.controls) : null,
     (n.actions || (n.action ? [n.action] : [])).map((a) => el('button', { class: 'btn btn-sm', type: 'button', onclick: a.run }, a.label)))));
 }
 
@@ -817,6 +818,7 @@ async function copyRows(source, { includeClosed = false } = {}) {
 // ------------------------------------------------------------------ saving
 
 function problems() {
+  if (state.notices.has('choose')) return [{ text: 'Choose CAPEX or REVEX for the jobs in the message at the top first.', focus: $('#notices select') }];
   if (state.invalid.size) {
     const [key] = state.invalid.keys();
     const [lineKey, day] = key.split('|');
@@ -903,6 +905,7 @@ async function openMonth(month) {
   state.invalid.clear();
   setNotice('sheet', null);
   setNotice('theirs', null);
+  setNotice('choose', null);
   history.replaceState(null, '', `?month=${month}${state.viewAs ? `&as=${encodeURIComponent(state.viewAs.person.username)}` : ''}`);
   $('#month-label').textContent = state.info.label;
   document.title = `${state.info.label} · Engineer Timewriting`;
@@ -1234,6 +1237,44 @@ async function useSpreadsheet(result, fileName) {
     title: `Loaded ${fileName}: ${data.jobs.length} job${data.jobs.length === 1 ? '' : 's'}, ${fmtHours(hours)} hours.`,
     text: 'Check it, then press Save.',
     list: notes.length ? notes : undefined,
+  });
+  askTasks(result.choices || []);
+}
+
+// Jobs from a spreadsheet that are open for both CAPEX and REVEX, where it doesn't say which:
+// their hours go in once a choice is made for each.
+function askTasks(choices) {
+  setNotice('choose', null);
+  if (!choices.length) return;
+  const picks = new Map();
+  const total = (hours) => Object.values(hours).reduce((a, b) => a + b, 0);
+  const controls = choices.map((choice) => el('label', { class: 'task-pick' },
+    `${choice.job}${choice.description ? ` ${choice.description}` : ''} (${fmtHours(total(choice.hours))} h) `,
+    el('select', { class: 'reuse-select', 'aria-label': `CAPEX or REVEX for ${choice.job}`, onchange: (e) => picks.set(choice.job, e.currentTarget.value) },
+      el('option', { value: '' }, 'Choose…'), TASKS.map((task) => el('option', { value: task }, task)))));
+  setNotice('choose', {
+    tone: 'warn',
+    title: 'CAPEX or REVEX?',
+    text: `${choices.length === 1 ? 'This job is' : 'These jobs are'} open for both in the Job Task Overview report, and the spreadsheet `
+      + 'doesn’t say which. Choose, then press Put the hours in. Until then their hours aren’t in the month.',
+    controls,
+    actions: [{ label: 'Put the hours in', run: () => {
+      const missing = choices.filter((c) => !TASKS.includes(picks.get(c.job)));
+      if (missing.length) {
+        toast(`Choose CAPEX or REVEX for ${missing.map((c) => c.job).join(', ')} first.`, { tone: 'warn' });
+        return;
+      }
+      for (const choice of choices) {
+        const row = state.draft.jobs.find((r) => r.job === choice.job);
+        if (!row) continue;
+        const into = row.hours[picks.get(choice.job)] ||= {};
+        for (const [day, h] of Object.entries(choice.hours)) into[day] = Math.round(((into[day] || 0) + h) * 100) / 100;
+      }
+      setNotice('choose', null);
+      changed();
+      render();
+      updateStatus();
+    } }],
   });
 }
 

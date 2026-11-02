@@ -345,10 +345,10 @@ def job_checks(ts: Timesheet, jobs_index: dict) -> list[str]:
             info = jobs_index.get(line.job)
             hours = fmt_number(line.total)
             if info is None:
-                checks.append(f"{ts.employee}: {line.job} {line.task} ({hours} h) is not in the current list of open jobs.")
+                checks.append(f"{ts.employee}: {line.job} {line.task} ({hours} h): the job's Status isn't Open in the Job Task Overview report.")
             elif line.task not in info["tasks"]:
                 open_for = " and ".join(info["tasks"])
-                checks.append(f"{ts.employee}: {line.job} is open for {open_for}, not {line.task} ({hours} h).")
+                checks.append(f"{ts.employee}: {line.job} is only open for {open_for} in the Job Task Overview report, not {line.task} ({hours} h).")
     for day, hours in sorted(ts.day_totals().items()):
         if hours > 24:
             when = dt.date(ts.year, ts.month, day).strftime("%a %d %b")

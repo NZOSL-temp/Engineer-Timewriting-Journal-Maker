@@ -13,7 +13,7 @@ import {
   $, el, toast, TASKS, cleanText, monthInfo, shiftMonth, isMonth, fmtHours, fmtDateTime, askConfirm, writerFor,
   saveToGitHub, readVerified, savedMonths, defaultUsername, FIRST_MONTH, latestMonth, monthSpan, sheetsWriteAccess,
 } from './app.js';
-import { readFirstSheet, sheetMonth, sheetName, isJobReport, timesheetFromSheet } from './xlsx.js';
+import { applyChoices, readFirstSheet, sheetMonth, sheetName, isJobReport, timesheetFromSheet } from './xlsx.js';
 import { fireworks } from './fireworks.js';
 
 const MAX_BYTES = 25 * 1024 * 1024;
@@ -207,7 +207,7 @@ const closedMonths = () => page.settings()?.closedMonths || page.bundle.closedMo
 // 'same' (nothing would change) or 'ready'.
 function evaluate(row) {
   if (['reading', 'saving', 'saved'].includes(row.state)) return;
-  Object.assign(row, { state: 'blocked', problem: '', notes: [], record: null, existing: null });
+  Object.assign(row, { state: 'blocked', problem: '', notes: [], record: null, existing: null, choices: [] });
   const stop = (problem, state = 'blocked') => Object.assign(row, { state, problem });
   if (row.readError) return stop(row.readError);
   const person = engineer(row.username);
@@ -225,16 +225,25 @@ function evaluate(row) {
   } catch (error) {
     return stop(isMonth(error.month) ? `${error.message} Choose ${monthInfo(error.month).label} as its month.` : error.message);
   }
-  const record = toRecord(result.data);
+  // Jobs open for both CAPEX and REVEX that the spreadsheet doesn't say: chosen in the list.
+  row.picks ||= {};
+  row.choices = result.choices || [];
+  const record = toRecord(applyChoices(result.data, row.choices, row.picks));
   row.record = record;
   if (!record.jobs.length && !record.other.length) return stop(`It has no jobs or hours for ${label}.`);
   if (record.jobs.length > 200 || record.other.length > 100) return stop('It has more rows than a timesheet can hold (200 jobs and 100 other-time rows).');
-  const over = Object.entries(dayTotals(record)).filter(([, h]) => h > 24).map(([day, h]) => `${day} ${label.slice(0, 3)}: ${fmtHours(h)} h`);
+  const everyHour = toRecord(applyChoices(result.data, row.choices, Object.fromEntries(row.choices.map((c) => [c.job, 'REVEX']))));
+  const over = Object.entries(dayTotals(everyHour)).filter(([, h]) => h > 24).map(([day, h]) => `${day} ${label.slice(0, 3)}: ${fmtHours(h)} h`);
   if (over.length) {
     return stop(`More than 24 hours on ${over.length === 1 ? 'a day' : `${over.length} days`} (${over.join('; ')}). Fix the spreadsheet, then add it again.`);
   }
   const twin = rows.find((r) => r !== row && r.username === row.username && r.month === row.month && r.sheet && r.state !== 'saved');
   if (twin) return stop(`${twin.file.name} is for ${person.name}’s ${label} too. Remove one of them.`);
+  const unpicked = row.choices.filter((c) => !TASKS.includes(row.picks[c.job]));
+  if (unpicked.length) {
+    return stop(`Choose CAPEX or REVEX for ${unpicked.map((c) => c.job).join(', ')} below: ${unpicked.length === 1 ? 'it’s' : 'they’re'} open for both, `
+      + 'and the spreadsheet doesn’t say.', 'choose');
+  }
 
   row.notes = [...result.notes, ...jobNotes(record)];
   if (row.nameCell && pointsTo(row.nameCell, engineers())?.username !== person.username) {
@@ -393,13 +402,23 @@ function rowLines(row, people) {
       row.nameCell ? el('span', { class: 'row-note' }, `NAME: ${row.nameCell}`) : null),
     el('td', {}, who),
     el('td', {}, when),
-    el('td', { class: 'num' }, row.record ? fmtHours(totalHours(row.record)) : '–',
+    el('td', { class: 'num' }, row.record ? fmtHours(totalHours(row.record) + (row.choices || []).filter((c) => !TASKS.includes(row.picks?.[c.job])).reduce((a, c) => a + sum(c.hours), 0)) : '–',
       row.record ? el('span', { class: 'row-note' }, `${row.record.jobs.length} job${row.record.jobs.length === 1 ? '' : 's'}`) : null),
     statusCell(row, person),
     el('td', { class: 'row-actions' }, action))];
   const showNotes = row.notes?.length && ['ready', 'same', 'saving', 'saved'].includes(row.state);
-  if (showNotes || row.record) {
-    lines.push(el('tr', { class: 'bulk-more' }, el('td', { colspan: 6 },
+  const picking = row.choices?.length && !['saving', 'saved'].includes(row.state) ? el('div', { class: 'checks checks-warn bulk-picks' },
+    el('strong', {}, 'CAPEX or REVEX?'),
+    el('span', { class: 'muted' }, ' These jobs are open for both in the Job Task Overview report, and the spreadsheet doesn’t say which.'),
+    el('ul', {}, row.choices.map((choice) => el('li', {},
+      el('label', {}, `${choice.job}${choice.description ? ` ${choice.description}` : ''} (${fmtHours(sum(choice.hours))} h) `,
+        el('select', { class: 'reuse-select', disabled: saving, 'aria-label': `CAPEX or REVEX for ${choice.job}`,
+          dataset: { focus: `${row.id}-${choice.job}` },
+          onchange: (event) => { row.picks[choice.job] = event.currentTarget.value; row.message = null; refresh(); } },
+        el('option', { value: '' }, 'Choose…'),
+        TASKS.map((task) => el('option', { value: task, selected: row.picks?.[choice.job] === task }, task)))))))) : null;
+  if (showNotes || row.record || picking) {
+    lines.push(el('tr', { class: 'bulk-more' }, el('td', { colspan: 6 }, picking,
       showNotes ? el('div', { class: 'checks checks-warn' }, el('strong', {}, 'Check:'), el('ul', {}, row.notes.map((n) => el('li', {}, n)))) : null,
       row.record ? el('details', { class: 'bulk-details', open: Boolean(row.open), ontoggle: (e) => { row.open = e.currentTarget.open; } },
         el('summary', {}, 'What’s in it'), whatsInIt(row.record)) : null)));

@@ -868,3 +868,11 @@ body.drop-over::after { content: "Drop the spreadsheet to load it"; position: fi
   .bulk-table select { width: 100%; max-width: none; }
   .bulk-more > td { padding: 0 12px 12px !important; }
 }
+
+/* Choosing CAPEX or REVEX for jobs open for both (from a spreadsheet) */
+.notice-controls { flex-basis: 100%; display: grid; gap: 6px; }
+.task-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.bulk-picks ul { list-style: none; padding-left: 0; display: grid; gap: 6px; }
+.bulk-picks label { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.chip-error { background: var(--danger-bg); color: var(--danger); }
+.check-chip { border: 0; cursor: pointer; }

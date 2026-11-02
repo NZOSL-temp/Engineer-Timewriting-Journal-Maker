@@ -106,34 +106,40 @@ async function relationships(read, part) {
   }));
 }
 
-// The first sheet (the left-most tab) as rows of cells: numbers, text, true/false, null, or
-// { days } for a cell shown as a time (7:30), { iso } for a date written as text and
-// { formula: true } for a formula with no worked-out value.
-// date1904 is true for workbooks using the old Mac date system.
-export async function readFirstSheet(bytes) {
+// The workbook's parts: how to read files from it, its sheets (in tab order), shared strings
+// and which cell styles are times. Throws if it isn't an .xlsx.
+async function openWorkbook(bytes) {
   if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) throw new Error('This isn’t an Excel (.xlsx) file. In Excel, use File › Save As › Excel Workbook (.xlsx).');
   if (typeof DecompressionStream !== 'function') throw new Error('This browser can’t open Excel files. Try a newer Chrome, Edge, Safari or Firefox.');
   const read = entries(bytes);
   const main = (await relationships(read, '')).find((r) => /\/officeDocument$/.test(r.type))?.target || 'xl/workbook.xml';
   const workbook = plain(await read(main));
-  const first = tags(workbook, 'sheet')[0];
-  if (!first) throw new Error('This Excel file has no sheets.');
-  const date1904 = /^(1|true)$/i.test(attr(tags(workbook, 'workbookPr')[0] || '', 'date1904') || '');
-  // Set by programs that write formulas without working them out; Excel clears it when it saves.
-  const recalc = /^(1|true)$/i.test(attr(tags(workbook, 'calcPr')[0] || '', 'fullCalcOnLoad') || '');
   const rels = await relationships(read, main);
-  const target = rels.find((r) => r.id === attr(first, 'id'))?.target || resolve(main, 'worksheets/sheet1.xml');
-  const xml = plain(await read(target));
-  if (!xml) throw new Error('The first sheet of this Excel file couldn’t be read. Is it a chart rather than a sheet?');
+  const sheets = tags(workbook, 'sheet').map((tag, i) => ({
+    name: attr(tag, 'name') || `Sheet${i + 1}`,
+    path: rels.find((r) => r.id === attr(tag, 'id'))?.target || resolve(main, `worksheets/sheet${i + 1}.xml`),
+  }));
+  if (!sheets.length) throw new Error('This Excel file has no sheets.');
   const sharedPart = rels.find((r) => /\/sharedStrings$/.test(r.type))?.target || resolve(main, 'sharedStrings.xml');
-  const times = timeStyles(plain(await read(rels.find((r) => /\/styles$/.test(r.type))?.target || resolve(main, 'styles.xml'))));
-  const shared = [...plain(await read(sharedPart)).matchAll(/<si\b[^>]*?(?:\/>|>([\s\S]*?)<\/si>)/g)].map((m) => textOf(m[1] || ''));
+  return {
+    read,
+    sheets,
+    date1904: /^(1|true)$/i.test(attr(tags(workbook, 'workbookPr')[0] || '', 'date1904') || ''),
+    // Set by programs that write formulas without working them out; Excel clears it when it saves.
+    recalc: /^(1|true)$/i.test(attr(tags(workbook, 'calcPr')[0] || '', 'fullCalcOnLoad') || ''),
+    times: timeStyles(plain(await read(rels.find((r) => /\/styles$/.test(r.type))?.target || resolve(main, 'styles.xml')))),
+    shared: [...plain(await read(sharedPart)).matchAll(/<si\b[^>]*?(?:\/>|>([\s\S]*?)<\/si>)/g)].map((m) => textOf(m[1] || '')),
+  };
+}
 
+// One sheet's rows (the first `maxRows` of them, if given).
+function sheetRows(xml, book, maxRows = Infinity) {
   const rows = [];
   let nextRow = 0;
   for (const [, rowTag, , body] of xml.matchAll(/<row\b([^>]*?)(\/>|>([\s\S]*?)<\/row>)/g)) {
     const r = Number(attr(rowTag, 'r'));
     const index = Number.isInteger(r) && r >= 1 ? r - 1 : nextRow;
+    if (index >= maxRows) break;
     nextRow = index + 1;
     const cells = [];
     let nextCol = 0;
@@ -144,18 +150,43 @@ export async function readFirstSheet(bytes) {
       const type = attr(cellTag, 't');
       const v = (inner.match(/<v\b[^>]*>([^<]*)<\/v>/) || [])[1];
       let value = null;
-      if (type === 's') value = shared[Number(v)] ?? null;
+      if (type === 's') value = book.shared[Number(v)] ?? null;
       else if (type === 'inlineStr') value = textOf(inner);
       else if (type === 'str' || type === 'e') value = v == null ? null : unescapeXml(v);
       else if (type === 'b') value = v == null ? null : v === '1' || v === 'true';
       else if (type === 'd') value = v ? { iso: unescapeXml(v) } : null; // a date written as text (rare)
-      else if (v != null && v.trim() !== '') value = times.has(Number(attr(cellTag, 's'))) ? { days: Number(v) } : Number(v);
+      else if (v != null && v.trim() !== '') value = book.times.has(Number(attr(cellTag, 's'))) ? { days: Number(v) } : Number(v);
       if (v == null && /<f\b/.test(inner)) value = { formula: true }; // a formula never worked out
       cells[col] = value;
     }
     rows[index] = cells;
   }
-  return { name: attr(first, 'name') || 'Sheet1', date1904, recalc, rows: Array.from(rows, (row) => row || []) };
+  return Array.from(rows, (row) => row || []);
+}
+
+// The first sheet (the left-most tab) as rows of cells: numbers, text, true/false, null, or
+// { days } for a cell shown as a time (7:30), { iso } for a date written as text and
+// { formula: true } for a formula with no worked-out value.
+// date1904 is true for workbooks using the old Mac date system.
+export async function readFirstSheet(bytes) {
+  const book = await openWorkbook(bytes);
+  const [first] = book.sheets;
+  const xml = plain(await book.read(first.path));
+  if (!xml) throw new Error('The first sheet of this Excel file couldn’t be read. Is it a chart rather than a sheet?');
+  return { name: first.name, date1904: book.date1904, recalc: book.recalc, rows: sheetRows(xml, book) };
+}
+
+// The first rows of every sheet, as text: [{ name, rows: [[text, ...], ...] }]. For checking
+// a file's column headings without reading all of it.
+export async function sheetTops(bytes, maxRows = 25) {
+  const book = await openWorkbook(bytes);
+  const out = [];
+  for (const sheet of book.sheets) {
+    const xml = plain(await book.read(sheet.path));
+    if (!xml) continue;
+    out.push({ name: sheet.name, rows: sheetRows(xml, book, maxRows).map((row) => Array.from(row, (cell) => text(cell))) });
+  }
+  return out;
 }
 
 // -------------------------------------------------------- the month in it
@@ -252,6 +283,9 @@ export function isJobReport(sheet) {
  * shape ({ jobs, other }). `jobs` maps job numbers to the job list's entries (for CAPEX/REVEX
  * when the sheet doesn't say), `otherTime` lists the office's other-time names. Returns
  * { data, notes, name }: notes are things to tell the engineer; name is the sheet's NAME.
+ * `choices` lists jobs open for both CAPEX and REVEX whose task the spreadsheet doesn't give:
+ * [{ job, description, hours }]; their hours are left out of `data` until someone chooses
+ * (see applyChoices).
  * Throws if the sheet isn't a timesheet, or is for another month (then the error's `month`
  * is the month it's for, "2026-09").
  */
@@ -306,6 +340,8 @@ export function timesheetFromSheet(sheet, month, { jobs = new Map(), otherTime =
   const otherRows = new Map(); // label -> row
   const known = new Map(otherTime.map((name) => [name.toLowerCase(), name]));
   const guessed = [];
+  const overruled = [];
+  const choices = new Map(); // job -> { job, description, hours }: open for both, the spreadsheet doesn't say
   const unread = [];
   const dropped = [];
   const mismatched = [];
@@ -349,12 +385,20 @@ export function timesheetFromSheet(sheet, month, { jobs = new Map(), otherTime =
       mismatched.push(`row ${excelRow} (“${what}”): its total is ${round2(total)} h, but its days in ${MONTHS[number - 1]} add up to ${sum} h`);
     }
     if (job) {
+      // CAPEX or REVEX: a job open for just one of them in the Job Task Overview report gets that
+      // one. One open for both gets what the spreadsheet says, or is left for the person loading it
+      // to choose. One that isn't open gets what the spreadsheet says (else REVEX), and is flagged.
       const info = jobs.get(job);
-      let task = taskIn(cell('manual')) || taskIn(cell('task'));
-      if (!task && Object.keys(hours).length) {
-        const open = info?.tasks || [];
-        task = open.length === 1 ? open[0] : 'REVEX';
-        if (open.length !== 1) guessed.push(job);
+      const open = info?.tasks || [];
+      const said = taskIn(cell('manual')) || taskIn(cell('task'));
+      const worked = Object.keys(hours).length > 0;
+      let task = said;
+      if (open.length === 1) {
+        task = open[0];
+        if (said && said !== task && worked) overruled.push(`${job} (the spreadsheet says ${said})`);
+      } else if (!open.length && !said && worked) {
+        task = 'REVEX';
+        guessed.push(job);
       }
       let entry = jobRows.get(job);
       if (!entry) {
@@ -362,6 +406,10 @@ export function timesheetFromSheet(sheet, month, { jobs = new Map(), otherTime =
         jobRows.set(job, entry);
       }
       if (task) add(entry.hours[task] ||= {}, hours);
+      else if (worked) {
+        if (!choices.has(job)) choices.set(job, { job, description: entry.description, hours: {} });
+        add(choices.get(job).hours, hours);
+      }
       continue;
     }
     // Other time: rows marked N/A (or with no job), named in the description. Rows without
@@ -388,8 +436,23 @@ export function timesheetFromSheet(sheet, month, { jobs = new Map(), otherTime =
       + `${some(unread)}. Type those hours in if they count.`);
   }
   if (guessed.length) {
-    notes.push(`The spreadsheet doesn’t say CAPEX or REVEX for ${guessed.length === 1 ? 'job' : 'jobs'} ${guessed.join(', ')}, so ${guessed.length === 1 ? 'its' : 'their'} hours went on REVEX. Move them if they should be CAPEX.`);
+    notes.push(`${guessed.length === 1 ? 'Job' : 'Jobs'} ${guessed.join(', ')} ${guessed.length === 1 ? 'isn’t' : 'aren’t'} open in the Job Task Overview report, and the spreadsheet doesn’t say CAPEX or REVEX, so the hours went on REVEX.`);
+  }
+  if (overruled.length) {
+    notes.push(`The Job Task Overview report has ${overruled.length === 1 ? 'this job' : 'these jobs'} open for only one of CAPEX and REVEX, so the hours went on that one: ${overruled.join('; ')}.`);
   }
   // (Closed jobs aren't mentioned here: the timesheet page already marks them.)
-  return { data: { jobs: [...jobRows.values()], other: [...otherRows.values()] }, notes, name: sheetName(sheet) };
+  return { data: { jobs: [...jobRows.values()], other: [...otherRows.values()] }, choices: [...choices.values()], notes, name: sheetName(sheet) };
+}
+
+// The month with the CAPEX/REVEX choices made: picks maps job -> 'CAPEX' or 'REVEX'. Jobs not
+// picked yet keep their hours out.
+export function applyChoices(data, choices = [], picks = {}) {
+  const jobsOut = data.jobs.map((entry) => ({ ...entry, hours: Object.fromEntries(Object.entries(entry.hours).map(([t, h]) => [t, { ...h }])) }));
+  for (const choice of choices) {
+    const task = picks[choice.job];
+    const entry = jobsOut.find((e) => e.job === choice.job);
+    if (entry && (task === 'CAPEX' || task === 'REVEX')) add(entry.hours[task] ||= {}, choice.hours);
+  }
+  return { ...data, jobs: jobsOut };
 }

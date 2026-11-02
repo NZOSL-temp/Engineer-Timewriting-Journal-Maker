@@ -429,8 +429,9 @@ with sync_playwright() as p:
             '<row r="2"><c r="A2" t="inlineStr"><is><t>JOB000010</t></is></c><c r="C2"><v>2</v></c><c r="D2"><v>4</v></c></row>')
     raw_xlsx(tmp / "textdates.xlsx", body, [])
     got = read_in_page(page, tmp / "textdates.xlsx")
-    check("reader: text and ISO dates; both tasks open so REVEX is guessed and said",
-          hours(got, ("JOB000010", "REVEX")) == {"1": 2, "2": 4} and any("CAPEX or REVEX" in n for n in got.get("notes", [])), json.dumps(got)[:400])
+    check("reader: text and ISO dates; a job open for both, the sheet not saying which, is left to choose",
+          got.get("choices") == [{"job": "JOB000010", "description": "Tank repaint", "hours": {"1": 2, "2": 4}}]
+          and not hours(got, ("JOB000010", "REVEX")) and not hours(got, ("JOB000010", "CAPEX")), json.dumps(got)[:400])
     # Only the first sheet counts
     raw_xlsx(tmp / "firstnot.xlsx", '<row r="1"><c r="A1" t="inlineStr"><is><t>Some notes</t></is></c></row>', [], first_sheet="Notes")
     got = read_in_page(page, tmp / "firstnot.xlsx")
@@ -457,6 +458,13 @@ with sync_playwright() as p:
           and "row 2" not in notes.split("match the days read")[-1].split(".")[0], notes)
     body = (f'<row r="1">{t("A1", "Job Number")}{t("B1", "Total Hours")}<c r="C1"><v>{serial(1)}</v></c></row>'
             f'<row r="2">{t("A2", "JOB009683")}<c r="B2"><f>SUM(C2)</f><v>0</v></c><c r="C2"><v>5</v></c></row>')
+    one_task = (f'<row r="1">{t("A1", "Job Number")}{t("B1", "Capex/Revex")}<c r="C1"><v>{serial(1)}</v></c></row>'
+                f'<row r="2">{t("A2", "JOB009683")}{t("B2", "CAPEX")}<c r="C2"><v>3</v></c></row>')
+    raw_xlsx(tmp / "one-task.xlsx", one_task, [])
+    got = read_in_page(page, tmp / "one-task.xlsx")
+    check("reader: a job open for only one of CAPEX/REVEX gets that one, and a sheet saying the other is noted",
+          hours(got, ("JOB009683", "REVEX")) == {"1": 3} and not hours(got, ("JOB009683", "CAPEX"))
+          and any("JOB009683 (the spreadsheet says CAPEX)" in n for n in got.get("notes", [])), json.dumps(got)[:400])
     raw_xlsx(tmp / "unworked-total.xlsx", body, [], recalc=True)
     got = read_in_page(page, tmp / "unworked-total.xlsx")
     check("reader: a never-worked-out formula total isn't a false alarm", hours(got, ("JOB009683", "REVEX")) == {"1": 5}
@@ -777,8 +785,19 @@ with sync_playwright() as p:
     ctx, page = new_page(browser)
     sign_in(page, "dee.office", r"admin\.html")
     page.wait_for_selector("#sheet-drop:not(.disabled)", timeout=30000)
-    drop_files(page, "#dropzone", [ben_nov])
+    inline_report = tmp / "Job Task Overview - inline headings.xlsx"
+    raw_xlsx(inline_report, '<row r="1">' + "".join(f'<c r="{col}1" t="inlineStr"><is><t>{name}</t></is></c>' for col, name in
+             zip("ABCDEF", ["Project No.", "Job Description", "Job Location", "Owner", "Project Task No.", "Status"])) + '</row>', [], first_sheet="Job Task Overview")
+    page.route(re.compile(r".*/contents/input/report\.json$"), lambda route, request: route.fulfill(status=500, json={"message": "test stops here"})
+               if request.method == "PUT" else route.fallback())
+    drop_files(page, "#dropzone", [inline_report])
+    page.locator("#upload-steps [data-step='check'][data-tone='ok'], #upload-steps [data-tone='error']").first.wait_for(timeout=15000)
+    check("report: headings stored in the sheet itself (not the shared text) are recognised",
+          "looks like a Job Task Overview report" in page.locator("#upload-steps").inner_text(), page.locator("#upload-steps").inner_text())
+    page.unroute(re.compile(r".*/contents/input/report\.json$"))
     page.locator("#upload-steps [data-tone='error']").wait_for(timeout=15000)
+    drop_files(page, "#dropzone", [ben_nov])
+    page.locator("#upload-steps [data-step='check'][data-tone='error']").wait_for(timeout=15000)
     check("bulk: a timesheet dropped in the job report's box is sent to the right one",
           "Timesheets from spreadsheets" in page.locator("#upload-steps").inner_text(), page.locator("#upload-steps").inner_text())
     drop_files(page, "main", [ben_nov]); page.wait_for_timeout(300)
@@ -815,6 +834,21 @@ with sync_playwright() as p:
     bulk_settled(page, 7)
     n = bulk_rows(page)[nobody.name]
     check("bulk: choosing who it's for makes it ready", n["state"] == "ready" and n["who"] == "Ben Sample" and "A new timesheet for Ben" in n["status"], json.dumps(n))
+    tank = tmp / "Ann Example tank.xlsx"
+    own_layout(tank, first_of(nxt), [["J0010-DU-80", "", "", "Tank repaint", "", "", 0, 2]], total_row=False)
+    page.set_input_files("#sheet-files", [str(tank)])
+    bulk_settled(page, 8)
+    tk = bulk_rows(page)[tank.name]
+    picker = bulk_row(page, tank.name).get_by_label("CAPEX or REVEX for JOB000010")
+    check("bulk: a job open for both CAPEX and REVEX, the sheet not saying, must be chosen", tk["state"] == "choose"
+          and "Choose CAPEX or REVEX for JOB000010" in tk["status"] and picker.is_visible(), json.dumps(tk))
+    picker.select_option("CAPEX")
+    bulk_settled(page, 8)
+    bulk_row(page, tank.name).locator("summary").click()
+    check("bulk: ...once chosen it's ready, with the hours on that task", bulk_rows(page)[tank.name]["state"] == "ready"
+          and "JOB000010 CAPEX · 2 h" in bulk_row(page, tank.name).locator(".bulk-what").inner_text(), json.dumps(bulk_rows(page)[tank.name]))
+    bulk_row(page, tank.name).get_by_role("button", name=re.compile("^Remove")).click()
+    bulk_settled(page, 7)
     page.set_input_files("#sheet-files", [str(ann_copy)])
     bulk_settled(page, 8)
     rows = bulk_rows(page)
@@ -909,6 +943,13 @@ with sync_playwright() as p:
     page.locator("#sheets-save", has_text=re.compile("^Save")).wait_for(timeout=60000)
     month_row.filter(has_text="2 engineers").wait_for(timeout=90000)
     check("bulk: the journals list updates by itself once the Action has run", "2 engineers" in month_row.inner_text())
+    with page.expect_download() as d:
+        month_row.get_by_role("button", name="Journal (Excel)").click()
+    journal_file = tmp / "downloaded-journal.xlsx"
+    shutil.copy(d.value.path(), journal_file)
+    check("journals: the journal downloads as the Excel workbook", d.value.suggested_filename.startswith("Timewriting Journal - ")
+          and d.value.suggested_filename.endswith(".xlsx") and openpyxl.load_workbook(journal_file).sheetnames == ["Input", "Journal"],
+          d.value.suggested_filename)
     page.click("#sheets-stop"); page.wait_for_timeout(300)
     check("bulk: Stop editing takes Save away again", page.locator("#sheets-save").count() == 0 and page.locator("#sheets-allow").is_visible())
     ctx.close()
@@ -920,6 +961,19 @@ with sync_playwright() as p:
     check("arrows: none before September 2026", page.locator("#prev-month").is_disabled() and page.locator("#next-month").is_enabled())
     page.click("#next-month"); page.wait_for_timeout(1000)
     check("arrows: › goes to the next month", "month=2026-10" in page.url and "October 2026" in page.locator("#month-label").inner_text())
+    tank_sep = tmp / "ben-september-tank.xlsx"
+    own_layout(tank_sep, dt.datetime(2026, 9, 1), [["J0010-DU-80", "", "", "Tank repaint", "", "", 0, 2, None, 1]], name="Ben Sample", total_row=False)
+    page.goto(SITE_URL + "timesheet.html?month=2026-09"); wait_ready(page)
+    load_file(page, tank_sep)
+    choose = page.locator("#notices").get_by_label("CAPEX or REVEX for JOB000010")
+    check("sheet: a job open for both, not said, asks CAPEX or REVEX and keeps its hours out until then",
+          choose.is_visible() and not grid(page), json.dumps(grid(page)))
+    page.click("#save-btn"); page.wait_for_timeout(400)
+    check("sheet: ...and Save waits for the choice", "Choose CAPEX or REVEX" in page.locator("#toast").inner_text())
+    choose.select_option("CAPEX")
+    page.locator("#notices").get_by_role("button", name="Put the hours in").click(); page.wait_for_timeout(400)
+    check("sheet: ...then the hours go on the chosen task", any("JOB000010" in k and "CAPEX" in k and v == {"1": 2, "3": 1} for k, v in grid(page).items()),
+          json.dumps(grid(page)))
     page.goto(SITE_URL + f"timesheet.html?month={months_from_now(1)}"); wait_ready(page)
     check("arrows: none after next month", page.locator("#next-month").is_disabled() and page.locator("#prev-month").is_enabled())
     page.goto(SITE_URL + "timesheet.html?month=2026-05"); wait_ready(page)
