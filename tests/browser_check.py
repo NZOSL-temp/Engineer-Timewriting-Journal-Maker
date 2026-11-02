@@ -242,7 +242,7 @@ def asking(page):
 
 
 def months_from_now(n):
-    """"YYYY-MM" n months after this month (New timesheet offers this month and the next two)."""
+    """"YYYY-MM" n months after this month (New timesheet offers September 2026 to next month)."""
     today = dt.date.today()
     y, m = divmod(today.year * 12 + today.month - 1 + n, 12)
     return f"{y}-{m + 1:02d}"
@@ -487,12 +487,23 @@ with sync_playwright() as p:
     own_layout(mine, first_of(nxt), [["JOB009683", "DU", "80", "Wharfline log yard review", "REVEX", "", 0, 3, None, 1.5],
                                       ["N/A", "N/A", "N/A", "Training", "", "", 0, None, 2]], total_row=False)
     page.goto(SITE_URL + "home.html"); page.wait_for_selector("#new-sheet:not([hidden])", timeout=30000); page.wait_for_timeout(1500)
-    new_timesheet(page, sheet=wrong)
+    page.click("#new-sheet"); page.wait_for_timeout(300)
+    offered = page.locator("#new-month option").evaluate_all("os => os.map((o) => o.value)")
+    expected, m = [], months_from_now(1)
+    while m >= "2026-09":
+        if m != "2026-11":  # Ann's November is started
+            expected.append(m)
+        y, mo = int(m[:4]), int(m[5:]); m = f"{y - (mo == 1)}-{12 if mo == 1 else mo - 1:02d}"
+    check("new: months from September 2026 to next month, not started ones", offered == expected, f"{offered} vs {expected}")
+    page.locator("#new-panel").get_by_role("button", name="Cancel").click()
+    before = tmp / "ann-august.xlsx"
+    own_layout(before, dt.datetime(2026, 8, 1), [["JOB009683", "", "", "x", "REVEX", "", 0, 1]])
+    new_timesheet(page, sheet=before)
     status = page.locator(".new-file-status")
-    check("new from sheet: a sheet for a month that can't be started says so", "is for September 2026" in status.inner_text()
+    check("new from sheet: a sheet for a month that can't be started says so", "is for August 2026, but new timesheets can only be for September 2026 to" in status.inner_text()
           and page.locator("input[name='start-with'][value='sheet']").is_checked(), status.inner_text())
     page.get_by_role("button", name="Start timesheet").click(); page.wait_for_timeout(500)
-    check("new from sheet: ...and Start explains rather than opening", "home.html" in page.url and "is for September 2026, not" in status.inner_text(), status.inner_text())
+    check("new from sheet: ...and Start explains rather than opening", "home.html" in page.url and "is for August 2026, not" in status.inner_text(), status.inner_text())
     page.locator("#new-panel").get_by_role("button", name="Cancel").click()
     new_timesheet(page, sheet=mine)
     page.locator("#new-panel").screenshot(path=str(SHOTS / "new-panel.png"))
@@ -574,7 +585,7 @@ with sync_playwright() as p:
     check("office home: New timesheet, Open and Delete once allowed", page.locator("#new-sheet").is_visible()
           and page.locator("#sheets").get_by_role("button", name="Delete November 2026").is_visible()
           and "Editing Ann Example" in notice.inner_text() and notice.get_by_role("button", name="Stop editing").is_visible())
-    later = months_from_now(2)
+    later = months_from_now(-1)  # last month: still on offer
     new_timesheet(page, later, source="2026-11")
     page.get_by_role("button", name="Start timesheet").click()
     page.wait_for_url(re.compile(rf"timesheet\.html\?month={later}"), timeout=30000); wait_ready(page)

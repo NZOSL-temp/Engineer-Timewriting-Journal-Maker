@@ -192,12 +192,14 @@ function confirmDelete(button, month) {
 
 // -------------------------------------------------------- a new timesheet
 
-// Months that can be started: this month and the next two, except ones that already have
-// a timesheet or are closed.
+// Months that can be started: from the first month on the website (September 2026) to next
+// month, except ones that already have a timesheet or are closed.
+const FIRST_MONTH = '2026-09';
+const lastStartable = () => shiftMonth(thisMonth(), 1);
+const startRange = () => `${monthInfo(FIRST_MONTH).label} to ${monthInfo(lastStartable()).label}`;
 function startableMonths() {
-  const current = thisMonth();
   const out = [];
-  for (let m = shiftMonth(current, 2); m >= current; m = shiftMonth(m, -1)) {
+  for (let m = lastStartable(); m >= FIRST_MONTH; m = shiftMonth(m, -1)) {
     if (!state.sheets.has(m) && !isClosed(m)) out.push(m);
   }
   return out; // newest first
@@ -213,7 +215,7 @@ function showNewPanel() {
   const months = startableMonths();
   const sources = [...state.sheets.keys()].filter((m) => hasRows(state.sheets.get(m).data)).sort().reverse();
   if (!months.length) {
-    panel.replaceChildren(el('p', { class: 'muted' }, 'This month and the next two already have timesheets. Open one of them below.'));
+    panel.replaceChildren(el('p', { class: 'muted' }, `Every month from ${startRange()} already has a timesheet, or is closed. Open one of them below.`));
     panel.hidden = false;
     return;
   }
@@ -283,7 +285,7 @@ function showNewPanel() {
         say(`${file.name}: for ${label}.`);
       } else if (isClosed(month)) say(`${file.name} is for ${label}, which the office has closed.`, true);
       else if (state.sheets.has(month)) say(`${file.name} is for ${label}, which already has a timesheet: open it below and use Load from spreadsheet there.`, true);
-      else say(`${file.name} is for ${label}. Only this month and the next two can be started here: open ${label} with the ‹ › arrows on a timesheet and use Load from spreadsheet there.`, true);
+      else say(`${file.name} is for ${label}, but new timesheets can only be for ${startRange()}.`, true);
     } catch (error) {
       say(error.message || 'That spreadsheet couldn’t be read.', true);
     }
