@@ -128,7 +128,7 @@ function renderNotices() {
   box.replaceChildren(...[...state.notices.values()].map((n) => el('div', { class: `notice notice-${n.tone}` },
     el('div', { class: 'notice-text' }, n.title ? el('strong', {}, n.title, ' ') : null, n.text),
     n.list ? el('ul', { class: 'notice-list' }, n.list.map((item) => el('li', {}, item))) : null,
-    n.action ? el('button', { class: 'btn btn-sm', type: 'button', onclick: n.action.run }, n.action.label) : null)));
+    (n.actions || (n.action ? [n.action] : [])).map((a) => el('button', { class: 'btn btn-sm', type: 'button', onclick: a.run }, a.label)))));
 }
 
 function checkJobs() {
@@ -843,6 +843,7 @@ async function save() {
     if (state.version === version) state.meta.dirty = false;
     persistLocal();
     setNotice('newer-local', null);
+    setNotice('sheet', null);
     toast('Saved. The journal and workbooks update in about a minute.', { tone: 'ok' });
     fireworks();
   } catch (error) {
@@ -956,8 +957,11 @@ function useSaved(saved, rerender = true) {
   }
 }
 
-function goMonth(delta) {
+async function goMonth(delta) {
   if (state.saving) return;
+  // The office's changes aren't kept on this computer, so moving away would lose unsaved ones.
+  if (state.viewAs && state.adminWrite && state.meta.dirty
+    && !(await askConfirm(`Leave ${state.info.label} without saving?`, `Your unsaved changes to ${state.viewAs.person.name}’s ${state.info.label} will be lost.`, 'Leave without saving'))) return;
   openMonth(shiftMonth(state.month, delta));
 }
 
@@ -1077,7 +1081,7 @@ function showViewing() {
       tone: 'warn',
       title: `Editing ${person.name}’s timesheet.`,
       text: `Save stores it as ${first}’s saved copy: they’ll see your changes, and the journal uses them. Closed months still can’t be changed.`,
-      action: { label: 'Stop editing', run: stopWriting },
+      actions: [{ label: 'Stop editing', run: stopWriting }, backToAdmin],
     });
     return;
   }
@@ -1085,9 +1089,11 @@ function showViewing() {
     tone: 'view',
     title: `Viewing ${person.name}’s timesheet, read-only.`,
     text: 'This is their last save for the month, as they see it. Hours they haven’t saved yet are only on their own computer.',
-    action: { label: 'Allow write access', run: allowWriting },
+    actions: [{ label: 'Allow write access', run: allowWriting }, backToAdmin],
   });
 }
+
+const backToAdmin = { label: 'Back to Admin', run: () => { location.href = 'admin.html'; } };
 
 async function allowWriting() {
   const { person } = state.viewAs;
@@ -1097,7 +1103,7 @@ async function allowWriting() {
   }
   const yes = await askConfirm(`Allow write access to ${person.name}’s timesheets?`,
     `You’ll be able to change ${person.name}’s hours (including loading a spreadsheet) and save them as their saved copy. `
-    + 'They’ll see the changes. Anything they’ve typed but not saved yet stays on their computer.', 'Allow write access');
+    + 'They’ll see the changes. Hours they’ve typed on their own computer without saving are replaced by your save when they next open that month.', 'Allow write access');
   if (!yes) return;
   state.adminWrite = true;
   showViewing();
@@ -1115,6 +1121,7 @@ async function stopWriting() {
 // A yes/no question in the page's own dialog. Resolves true for yes.
 function askConfirm(title, text, yesLabel) {
   const dialog = $('#confirm');
+  if (dialog.open) return Promise.resolve(false); // one question at a time
   $('#confirm-title').textContent = title;
   $('#confirm-text').textContent = text;
   $('#confirm-yes').textContent = yesLabel;
@@ -1143,10 +1150,14 @@ async function loadSpreadsheet(file) {
     toast(isClosed() ? 'This month is closed, so it can’t be changed.' : 'Press “Allow write access” first to change this timesheet.', { tone: 'warn' });
     return;
   }
-  if (state.loading || state.saving) return;
+  if (state.loading || state.saving) {
+    toast(`Wait until ${state.info.label} has ${state.saving ? 'saved' : 'loaded'}, then try again.`, { tone: 'warn' });
+    return;
+  }
   let result;
   try {
-    if (!/\.xlsx$/i.test(file.name)) throw new Error('That isn’t an Excel (.xlsx) file. In Excel, use File › Save As › Excel Workbook (.xlsx).');
+    if (!/\.xls[xm]$/i.test(file.name)) throw new Error('That isn’t an Excel workbook (.xlsx). In Excel, use File › Save As › Excel Workbook (.xlsx).');
+    if (file.size > 25 * 1024 * 1024) throw new Error('That file is too big to be a timesheet (over 25 MB).');
     const sheet = await readFirstSheet(new Uint8Array(await file.arrayBuffer()));
     result = timesheetFromSheet(sheet, state.month, { jobs: state.jobs, otherTime: state.bundle.otherTime || [] });
   } catch (error) {
@@ -1185,10 +1196,6 @@ async function loadSpreadsheet(file) {
 function setUpSpreadsheet() {
   const input = $('#sheet-file');
   $('#sheet-btn').addEventListener('click', () => {
-    if (isReadOnly()) {
-      loadSpreadsheet({ name: '' }); // says why not
-      return;
-    }
     input.value = '';
     input.click();
   });
@@ -1201,16 +1208,20 @@ function setUpSpreadsheet() {
     depth += 1;
     document.body.classList.add('drop-over');
   });
-  document.addEventListener('dragleave', () => {
+  const clear = () => {
+    depth = 0;
+    document.body.classList.remove('drop-over');
+  };
+  document.addEventListener('dragleave', (event) => {
     depth = Math.max(0, depth - 1);
-    if (!depth) document.body.classList.remove('drop-over');
+    if (!depth || !event.relatedTarget) clear(); // left the window
   });
+  window.addEventListener('blur', clear);
   document.addEventListener('dragover', (event) => { if (hasFile(event)) event.preventDefault(); });
   document.addEventListener('drop', (event) => {
     if (!hasFile(event)) return;
     event.preventDefault();
-    depth = 0;
-    document.body.classList.remove('drop-over');
+    clear();
     loadSpreadsheet(event.dataTransfer.files[0]);
   });
 }

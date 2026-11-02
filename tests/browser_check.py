@@ -181,6 +181,59 @@ def own_layout(path, month_first, rows, name="Ann Example", total_row=True):
     wb.save(path)
 
 
+def raw_xlsx(path, rows_xml, shared, *, prefix="", date1904=False, q='"', shared_name="sharedStrings.xml", first_sheet="Hours",
+             styles=None, recalc=False):
+    """An .xlsx written by hand, the way other programs write them: optional element prefixes
+    (<x:row>), single-quoted attributes, the 1904 date system, a differently named shared-strings
+    part. Its second sheet is a decoy timesheet, so reading the first sheet is what's tested."""
+    import zipfile
+    x = f"{prefix}:" if prefix else ""
+    ns = f'xmlns{":" + prefix if prefix else ""}="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+    rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    pr = f"<{x}workbookPr date1904={q}1{q}/>" if date1904 else ""
+    calc = f"<{x}calcPr calcId={q}124519{q} fullCalcOnLoad={q}1{q}/>" if recalc else ""
+    workbook = (f'<?xml version="1.0"?><{x}workbook {ns} xmlns:r="{rel}">{pr}<{x}sheets>'
+                f"<{x}sheet name={q}{first_sheet}{q} sheetId={q}1{q} r:id={q}rId1{q}/>"
+                f"<{x}sheet name={q}Decoy{q} sheetId={q}2{q} r:id={q}rId2{q}/></{x}sheets>{calc}</{x}workbook>")
+    rels = ('<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            f'<Relationship Id="rId1" Type="{rel}/worksheet" Target="worksheets/sheet1.xml"/>'
+            f'<Relationship Id="rId2" Type="{rel}/worksheet" Target="/xl/worksheets/sheet2.xml"/>'
+            f'<Relationship Id="rId3" Type="{rel}/sharedStrings" Target="{shared_name}"/>'
+            f'<Relationship Id="rId4" Type="{rel}/styles" Target="styles.xml"/></Relationships>')
+    root = ('<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            f'<Relationship Id="rId1" Type="{rel}/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+    sheet = lambda body: f'<?xml version="1.0"?><{x}worksheet {ns}><{x}sheetData>{body}</{x}sheetData></{x}worksheet>'
+    decoy = f'<{x}row r="1"><{x}c r="A1" t="inlineStr"><{x}is><{x}t>Job Number</{x}t></{x}is></{x}c></{x}row>'
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>')
+        z.writestr("_rels/.rels", root)
+        z.writestr("xl/workbook.xml", workbook)
+        z.writestr("xl/_rels/workbook.xml.rels", rels)
+        z.writestr("xl/worksheets/sheet1.xml", sheet(rows_xml))
+        z.writestr("xl/worksheets/sheet2.xml", sheet(decoy))
+        z.writestr(f"xl/{shared_name}", f"<{x}sst {ns}>{''.join(shared)}</{x}sst>")
+        if styles:
+            z.writestr("xl/styles.xml", f'<?xml version="1.0"?><{x}styleSheet {ns}>{styles}</{x}styleSheet>')
+
+
+def serial(day, date1904=False):
+    import datetime as _dt
+    return (_dt.date(2026, 11, day) - (_dt.date(1904, 1, 1) if date1904 else _dt.date(1899, 12, 30))).days
+
+
+def read_in_page(page, path, month="2026-11"):
+    """Run the website's reader on a file: {data, notes, name} or {error}."""
+    return page.evaluate("""async ([b64, month]) => {
+      const { readFirstSheet, timesheetFromSheet } = await import('./assets/xlsx.js');
+      try {
+        const sheet = await readFirstSheet(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)));
+        const jobs = new Map([['JOB009683', { no: 'JOB009683', tasks: ['REVEX'], loc: 'DU', owner: '80', desc: 'Wharfline log yard review' }],
+                              ['JOB000010', { no: 'JOB000010', tasks: ['CAPEX', 'REVEX'], loc: 'DU', owner: '80', desc: 'Tank repaint' }]]);
+        return timesheetFromSheet(sheet, month, { jobs, otherTime: ['General Time', 'Training'] });
+      } catch (e) { return { error: e.message }; }
+    }""", [base64.b64encode(Path(path).read_bytes()).decode(), month])
+
+
 handler = type("Q", (http.server.SimpleHTTPRequestHandler,), {"log_message": lambda *a: None})
 site_server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), lambda *a, **k: handler(*a, directory=str(SITE), **k))
 threading.Thread(target=site_server.serve_forever, daemon=True).start()
@@ -233,6 +286,95 @@ import datetime as dt  # noqa: E402
 with sync_playwright() as p:
     browser = p.chromium.launch()
 
+    # ---- The reader on spreadsheets written the ways other programs write them
+    ctx, page = new_page(browser)
+    page.goto(SITE_URL + "index.html")
+    hours = lambda result, key: next((j["hours"].get(key[1], {}) for j in result.get("data", {}).get("jobs", []) if j["job"] == key[0]), None) \
+        if isinstance(key, tuple) else next((o["hours"] for o in result.get("data", {}).get("other", []) if o["label"] == key), None)
+    # Prefixed elements, cells and rows without positions, an empty self-closing row between rows,
+    # an empty shared string, rich text and phonetic runs, text hours ("7,5", "7.5h", "AL"),
+    # TRUE in a day cell, an other-time row starting with "Total", and rows below TOTAL HOURS.
+    sh = ["<x:si/>", "<x:si><x:t>Job Number</x:t></x:si>", "<x:si><x:t>Description</x:t></x:si>",
+          "<x:si><x:t>Capex/Revex</x:t></x:si>", "<x:si><x:t>N/A</x:t></x:si>",
+          "<x:si><x:r><x:t>General </x:t></x:r><x:r><x:t>Time</x:t></x:r><x:rPh><x:t>ignored</x:t></x:rPh></x:si>",
+          "<x:si><x:t>CAPEX</x:t></x:si>", "<x:si><x:t>Total Safety Training</x:t></x:si>", "<x:si><x:t>TOTAL HOURS</x:t></x:si>"]
+    c = lambda v, t=None: f"<x:c{' t=' + chr(34) + t + chr(34) if t else ''}><x:v>{v}</x:v></x:c>"
+    istr = lambda v: f'<x:c t="inlineStr"><x:is><x:t>{v}</x:t></x:is></x:c>'
+    body = (f'<x:row r="1">{istr("NAME")}{istr("Ann Example")}</x:row>'
+            '<x:row r="2" spans="1:6" ht="20" customHeight="1"/>'
+            f'<x:row r="3">{c(1, "s")}{c(2, "s")}{c(3, "s")}{c(serial(1))}{c(serial(2))}{c(serial(3))}</x:row>'
+            f'<x:row>{c(4, "s")}{c(5, "s")}<x:c/>{c(2)}{istr("7,5")}{istr("AL")}</x:row>'
+            '<x:row spans="1:6"/>'
+            f'<x:row>{istr("J0010-DU-80")}{istr("Tank repaint")}{c(6, "s")}{istr("7.5h")}{c(1, "b")}{c(1)}</x:row>'
+            f'<x:row>{c(4, "s")}{c(7, "s")}<x:c/>{c(1)}</x:row>'
+            f'<x:row>{c(0, "s")}{c(8, "s")}</x:row>'
+            f'<x:row>{istr("JOB009683")}{istr("below the totals")}<x:c/>{c(99)}</x:row>')
+    raw_xlsx(tmp / "odd.xlsx", body, sh, prefix="x", q="'", shared_name="SharedStrings.xml")
+    got = read_in_page(page, tmp / "odd.xlsx")
+    check("reader: prefixed tags, cells without positions, empty rows, odd shared strings",
+          hours(got, ("JOB000010", "CAPEX")) == {"1": 7.5, "3": 1} and hours(got, "General Time") == {"1": 2, "2": 7.5}, json.dumps(got)[:400])
+    check("reader: an other-time row starting with Total is kept; rows below TOTAL HOURS aren't",
+          hours(got, "Total Safety Training") == {"1": 1} and hours(got, ("JOB009683", "REVEX")) is None, json.dumps(got)[:400])
+    check("reader: text that isn't hours is listed, TRUE isn't an hour", any("“AL”" in n and "General Time, 3 Nov" in n for n in got.get("notes", [])),
+          json.dumps(got.get("notes")))
+    check("reader: the NAME row", got.get("name") == "Ann Example")
+    # The 1904 date system, "Project No.", a job in the description when the job cell says N/A,
+    # one open task (no guess needed)
+    body = (f'<row r="1"><c r="A1" t="inlineStr"><is><t>Project No.</t></is></c><c r="B1" t="inlineStr"><is><t>Description</t></is></c>'
+            f'<c r="D1"><v>{serial(1, True)}</v></c><c r="E1"><v>{serial(2, True)}</v></c></row>'
+            '<row r="2"><c r="A2" t="inlineStr"><is><t>N/A</t></is></c><c r="B2" t="inlineStr"><is><t>J9683-DU-80 Wharfline</t></is></c>'
+            '<c r="E2"><v>3.25</v></c></row>')
+    raw_xlsx(tmp / "mac.xlsx", body, [], date1904=True)
+    got = read_in_page(page, tmp / "mac.xlsx")
+    check("reader: 1904 dates, Project No., job in the description", hours(got, ("JOB009683", "REVEX")) == {"2": 3.25}
+          and not any("CAPEX or REVEX" in n for n in got.get("notes", [])), json.dumps(got)[:400])
+    # Dates typed as text (day first) and an ISO date cell
+    body = ('<row r="1"><c r="A1" t="inlineStr"><is><t>Job Number</t></is></c><c r="B1" t="inlineStr"><is><t>Description</t></is></c>'
+            '<c r="C1" t="inlineStr"><is><t>1/11/2026</t></is></c><c r="D1" t="d"><v>2026-11-02T00:00:00</v></c></row>'
+            '<row r="2"><c r="A2" t="inlineStr"><is><t>JOB000010</t></is></c><c r="C2"><v>2</v></c><c r="D2"><v>4</v></c></row>')
+    raw_xlsx(tmp / "textdates.xlsx", body, [])
+    got = read_in_page(page, tmp / "textdates.xlsx")
+    check("reader: text and ISO dates; both tasks open so REVEX is guessed and said",
+          hours(got, ("JOB000010", "REVEX")) == {"1": 2, "2": 4} and any("CAPEX or REVEX" in n for n in got.get("notes", [])), json.dumps(got)[:400])
+    # Only the first sheet counts
+    raw_xlsx(tmp / "firstnot.xlsx", '<row r="1"><c r="A1" t="inlineStr"><is><t>Some notes</t></is></c></row>', [], first_sheet="Notes")
+    got = read_in_page(page, tmp / "firstnot.xlsx")
+    check("reader: only the first sheet is read", "first sheet (“Notes”)" in (got.get("error") or ""), json.dumps(got))
+    # Hours shown as times (a built-in and a custom [h]:mm style, and "7:30" typed as text), a row
+    # with hours but no job number, a row whose own total doesn't match its days, and a formula
+    # total a program never worked out (no false alarm).
+    styles = ('<numFmts count="1"><numFmt numFmtId="170" formatCode="[h]:mm"/></numFmts>'
+              '<cellXfs count="3"><xf numFmtId="0"/><xf numFmtId="20" applyNumberFormat="1"/><xf numFmtId="170" applyNumberFormat="1"/></cellXfs>')
+    t = lambda ref, v: f'<c r="{ref}" t="inlineStr"><is><t>{v}</t></is></c>'
+    body = (f'<row r="1">{t("A1", "Job Number")}{t("B1", "Description")}{t("C1", "Total Hours")}'
+            f'<c r="D1"><v>{serial(1)}</v></c><c r="E1"><v>{serial(2)}</v></c><c r="F1"><v>{serial(3)}</v></c></row>'
+            f'<row r="2">{t("A2", "JOB009683")}<c r="C2"><f>SUM(D2:F2)</f><v>16</v></c>'
+            f'<c r="D2" s="1"><v>0.3125</v></c><c r="E2" s="2"><v>0.25</v></c>{t("F2", "2:30")}</row>'
+            f'<row r="3">{t("A3", "DU")}{t("B3", "Somewhere")}<c r="D3"><v>3</v></c></row>'
+            f'<row r="4">{t("A4", "N/A")}{t("B4", "Training")}<c r="C4"><v>10</v></c><c r="D4"><v>4</v></c><c r="E4"><v>5</v></c></row>')
+    raw_xlsx(tmp / "times.xlsx", body, [], styles=styles)
+    got = read_in_page(page, tmp / "times.xlsx")
+    notes = " ".join(got.get("notes", []))
+    check("reader: hours shown as times (7:30 is 7.5 h), built-in, [h]:mm and typed",
+          hours(got, ("JOB009683", "REVEX")) == {"1": 7.5, "2": 6, "3": 2.5}, json.dumps(got)[:400])
+    check("reader: a row with hours but no job number is reported, not lost", "row 3 (“DU – Somewhere”), 3 h" in notes, notes)
+    check("reader: a row whose total doesn't match its days is reported", "row 4 (“Training”): its total is 10 h, but its days in November add up to 9 h" in notes
+          and "row 2" not in notes.split("match the days read")[-1].split(".")[0], notes)
+    body = (f'<row r="1">{t("A1", "Job Number")}{t("B1", "Total Hours")}<c r="C1"><v>{serial(1)}</v></c></row>'
+            f'<row r="2">{t("A2", "JOB009683")}<c r="B2"><f>SUM(C2)</f><v>0</v></c><c r="C2"><v>5</v></c></row>')
+    raw_xlsx(tmp / "unworked-total.xlsx", body, [], recalc=True)
+    got = read_in_page(page, tmp / "unworked-total.xlsx")
+    check("reader: a never-worked-out formula total isn't a false alarm", hours(got, ("JOB009683", "REVEX")) == {"1": 5}
+          and not any("match the days" in n for n in got.get("notes", [])), json.dumps(got)[:300])
+    body = (f'<row r="1">{t("A1", "Job Number")}<c r="B1"><v>{serial(1)}</v></c></row>'
+            f'<row r="2">{t("A2", "JOB009683")}<c r="B2"><f>4+1</f></c></row>')
+    raw_xlsx(tmp / "unworked.xlsx", body, [], recalc=True)
+    check("reader: hours that are formulas never worked out: asks to save it in Excel first",
+          "Open it in Excel, save it" in (read_in_page(page, tmp / "unworked.xlsx").get("error") or ""))
+    (tmp / "not.xlsx").write_bytes(b"%PDF-1.4 not a spreadsheet")
+    check("reader: a file that isn't a spreadsheet", "isn’t an Excel" in (read_in_page(page, tmp / "not.xlsx").get("error") or ""))
+    ctx.close()
+
     # ---- An engineer loads their own spreadsheet
     ctx, page = new_page(browser)
     sign_in(page, "ann.example", r"home\.html")
@@ -264,6 +406,7 @@ with sync_playwright() as p:
     page.click("#save-btn")
     page.locator("#save-status").filter(has_text=re.compile("^Saved")).wait_for(timeout=30000)
     wait_for_action()
+    check("sheet: the loaded message goes once saved", "Loaded ann-november.xlsx" not in page.locator("#notices").inner_text())
     check("sheet: saved like typed hours", saved_month("ann.example", "2026-11") == {
         "JOB009683/REVEX": {"1": 4, "3": 2.5}, "JOB000010/CAPEX": {"2": 1, "5": 6}, "General Time": {"1": 3, "2": 3}},
           json.dumps(saved_month("ann.example", "2026-11")))
@@ -281,7 +424,7 @@ with sync_playwright() as p:
     dctx.close()
 
     # Replacing: asks first; Cancel keeps it, Replace empties what the new sheet leaves empty
-    second = tmp / "ann-november-2.xlsx"
+    second = tmp / "ann-november-2.xlsm"  # a macro workbook is fine too
     own_layout(second, nov, [["JOB009683", "DU", "80", "Wharfline log yard review", "REVEX", "", 0, None, 7]], total_row=False)
     load_file(page, second)
     check("replace: asks first", page.locator("#confirm").evaluate("d => d.open") and "Replace November 2026" in page.locator("#confirm").inner_text())
@@ -301,6 +444,11 @@ with sync_playwright() as p:
     check("wrong month: refused, with why", "is for September 2026, not November 2026" in page.locator("#toast").inner_text()
           and grid(page) == after)
     page.screenshot(path=str(SHOTS / "sheet-loaded.png"), full_page=True)
+    page.set_viewport_size({"width": 390, "height": 844}); page.wait_for_timeout(400)
+    check("phone: the save bar fits (Load from spreadsheet included)", page.evaluate(
+        "() => { const bar = document.querySelector('#savebar'); return bar.scrollWidth <= bar.clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth; }")
+          and page.locator("#sheet-btn").is_visible())
+    page.screenshot(path=str(SHOTS / "sheet-phone.png"))
     ctx.close()
 
     # ---- The office: read-only until "Allow write access"
@@ -309,16 +457,25 @@ with sync_playwright() as p:
     page.goto(SITE_URL + "timesheet.html?month=2026-11&as=ann.example"); wait_ready(page)
     check("office: read-only, no spreadsheet button", page.locator("#sheet-btn").is_hidden() and page.locator("#save-btn").is_hidden()
           and page.locator("#grid-wrap input.cell").first.is_disabled())
+    notice = page.locator("#notices")
+    check("office: Allow write access and Back to Admin offered", notice.get_by_role("button", name="Allow write access").is_visible()
+          and notice.get_by_role("button", name="Back to Admin").is_visible())
     page.get_by_role("button", name="Allow write access").click()
     check("office: asks before allowing it", page.locator("#confirm").evaluate("d => d.open") and "Allow write access to Ann Example" in page.locator("#confirm").inner_text())
     page.click("#confirm-yes"); page.wait_for_timeout(500)
     check("office: can edit after allowing", page.locator("#sheet-btn").is_visible() and page.locator("#save-btn").is_visible()
-          and not page.locator("#grid-wrap input.cell").first.is_disabled() and "Editing Ann Example" in page.locator("#notices").inner_text())
+          and not page.locator("#grid-wrap input.cell").first.is_disabled() and "Editing Ann Example" in page.locator("#notices").inner_text()
+          and notice.get_by_role("button", name="Stop editing").is_visible() and notice.get_by_role("button", name="Back to Admin").is_visible())
     load_file(page, workbook)
     page.click("#confirm-yes"); page.wait_for_timeout(500)
     check("workbook: the website's own workbook loads back the same", grid(page) == shown, json.dumps(grid(page)))
     cell = page.locator("#grid-wrap tbody tr", has_text="JOB009683").locator("input.cell[data-day='9']")
     cell.fill("1.5"); cell.press("Tab")
+    page.click("#next-month"); page.wait_for_timeout(300)
+    check("office: leaving a month with unsaved changes asks", page.locator("#confirm").evaluate("d => d.open")
+          and "Leave November 2026 without saving" in page.locator("#confirm").inner_text())
+    page.click("#confirm-no"); page.wait_for_timeout(300)
+    check("office: ...and Cancel stays, changes kept", "November 2026" in page.locator("#month-label").inner_text() and cell.input_value() == "1.5")
     page.click("#save-btn")
     page.locator("#save-status").filter(has_text=re.compile("^Saved")).wait_for(timeout=30000)
     wait_for_action()
@@ -328,6 +485,9 @@ with sync_playwright() as p:
     page.get_by_role("button", name="Stop editing").click(); page.wait_for_timeout(500)
     check("office: Stop editing is read-only again", page.locator("#sheet-btn").is_hidden() and page.locator("#grid-wrap input.cell").first.is_disabled())
     page.screenshot(path=str(SHOTS / "office-writing.png"), full_page=True)
+    notice.get_by_role("button", name="Back to Admin").click()
+    page.wait_for_url(re.compile(r"admin\.html"), timeout=15000)
+    check("office: Back to Admin goes back", page.url.endswith("admin.html"))
     ctx.close()
 
     ctx, page = new_page(browser)

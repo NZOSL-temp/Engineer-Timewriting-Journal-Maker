@@ -80,3 +80,5 @@ python -m pip install --require-hashes --no-deps -r tools/requirements.txt
 python -m unittest discover -s tests
 python -m http.server -d site 8000   # needs site/data/bundle.enc.json and users.json to sign in
 ```
+
+`tests/browser_check.py` runs the real pages in Chromium against a fake GitHub and a temporary encrypted data repo, with made-up people (`pip install playwright && playwright install chromium` first). It covers loading a month from a spreadsheet, including files written the way other programs write them, and the office's **Allow write access**.
