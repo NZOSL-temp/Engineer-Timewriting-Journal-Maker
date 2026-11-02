@@ -813,3 +813,8 @@ html.framed body { display: none !important; }
   .journals thead th:nth-child(1) { width: 36%; }
   .journals thead th:nth-child(3) { width: 96px; }
 }
+
+/* Dropping a spreadsheet onto the timesheet page */
+body.drop-over::after { content: "Drop the spreadsheet to load it"; position: fixed; inset: 12px; z-index: 50; display: grid; place-items: center;
+  border: 3px dashed var(--accent); border-radius: 16px; background: color-mix(in srgb, var(--surface) 85%, transparent);
+  color: var(--accent); font-size: 20px; font-weight: 700; pointer-events: none; }

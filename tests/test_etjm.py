@@ -752,3 +752,22 @@ class RestoreMonthsTests(unittest.TestCase):
             self.assertNotIn("2026-10", vault.months(TIMESHEETS))
             self.assertNotIn("2026-10", vault.months(OUTPUT))
             self.assertIn("2026-09", vault.months(OUTPUT))
+
+
+class WriteKeysTests(unittest.TestCase):
+    """Admins' sign-ins carry what saving as an engineer needs ("Allow write access"); nobody else's do."""
+
+    def test_only_admins_get_them(self):
+        import base64
+        from etjm_accounts import profile_for, write_keys_for
+        keys, everyone, state = world()
+        writers = write_keys_for(everyone, keys, state["users"])
+        self.assertEqual(set(writers), {"ann.example", "ben.sample"})
+        self.assertEqual(writers["ann.example"]["tag"], user_tag(MASTER, "ann.example"))
+        ann_keys = [k for k in keys.data_keys("ann.example", state["users"]["ann.example"])]
+        self.assertEqual(writers["ann.example"]["dataKeys"], [base64.b64encode(k).decode() for k in ann_keys])
+        s = settings(admins=[{"name": "Dee Office"}])
+        dee = profile_for(everyone[2], s, keys, 1, state["users"]["dee.office"], "tok", writers)
+        ann = profile_for(everyone[0], s, keys, 1, state["users"]["ann.example"], None, None)
+        self.assertEqual(dee["writeKeys"], writers)
+        self.assertNotIn("writeKeys", ann)

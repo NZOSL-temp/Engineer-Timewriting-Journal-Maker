@@ -37,15 +37,16 @@ Working with the data repo (updating jobs, rates, downloading journals) is descr
 2. Type a job number (`9683`, `J9683` or `JOB009683`) in **Add a job**. Location, owner and description fill in from the job list and can be edited. The job gets a CAPEX line, a REVEX line or both, depending on which tasks are open in Business Central.
 3. Type hours into the days. The search box next to **Jobs** shows only the jobs that match what you type (a number like 9683 or J9683-DU-80, a location, owner or words from the description), to find one quickly. Blank means 0. `7.5`, `7,5` and `7:30` all work. Arrow keys and Enter move between cells, and you can paste a block straight from Excel.
 4. Add leave, general time and other non-job rows under **Other time**. These are recorded in your engineer workbook, not the journal.
-5. Press **Save** (or Ctrl+S). Jobs with no hours are kept on your timesheet and in your workbook, but only hours go into the journal.
-6. **Settings** (top right) shows your account, lets you change your password to one only you know, and shows where password-reset emails go.
+5. Or press **Load from spreadsheet** (or drop an .xlsx onto the page) to fill the month in from your own timesheet spreadsheet. The first sheet is read: a header row with **Job Number** and a column per date, other time on rows marked N/A, and job rows with a job number (`JOB009683`, `J9683-DU-80` or just the number, which may start the description instead). CAPEX/REVEX comes from a **Capex/Revex** or **Manually selected** column; anything below a TOTAL row is ignored. The website's own engineer workbook works too. If the month already has anything, it asks first, then replaces the whole month with what's in the sheet (empty days end up empty). Nothing is saved until you press Save.
+6. Press **Save** (or Ctrl+S). Jobs with no hours are kept on your timesheet and in your workbook, but only hours go into the journal.
+7. **Settings** (top right) shows your account, lets you change your password to one only you know, and shows where password-reset emails go.
 
 **Admins** (listed under `admins` in the data repo's settings) sign in to the **Admin** page, where they can:
 - upload a new *Job Task Overview* report, which is checked, saved in the private repo and published to the website within a minute or two;
 - add and remove engineers, set each engineer's recharge rate (there's no default rate) and email address (for password resets), and see, copy or reset passwords;
 - view and download each month's journal and engineer workbooks, or tick months and use **Download all journal CSVs** and **Download all engineer workbooks** (several months come as one .zip);
 - **Close** a month once its journal is uploaded, which freezes it (with fireworks, as for an engineer's Save);
-- **View** an engineer's pages as they see them, read-only (from their saved months; nothing can be changed or saved).
+- **View** an engineer's pages as they see them, read-only (from their saved months). On a month, **Allow write access** lets the office change it, or load their spreadsheet, and **Save** it as their saved copy (they see the change; closed months stay locked); **Stop editing** makes it read-only again.
 
 Engineers can copy their jobs and other-time rows from any month they've saved (**New timesheet** on My timesheets). Closed months are read-only and can't be deleted. In the Admin page's **View**, the office can also see each engineer's **Journal preview**.
 

@@ -46,6 +46,7 @@ from etjm_accounts import (  # noqa: E402
     handle_reset_requests,
     load_state_data,
     profile_for,
+    write_keys_for,
     public_users,
     sync_people,
     utc_now,
@@ -162,7 +163,9 @@ def main() -> int:
         print(f"Password-reset links that ran out: {result['expired']}.")
 
     epoch = int(state["epoch"])
-    profiles = {p["username"]: profile_for(p, settings, keys, epoch, state["users"][p["username"]], admin_token)
+    writers = write_keys_for(everyone, keys, state["users"])
+    profiles = {p["username"]: profile_for(p, settings, keys, epoch, state["users"][p["username"]], admin_token,
+                                           writers if p["admin"] else None)
                 for p in everyone}
     bundle = {
         "v": 3,

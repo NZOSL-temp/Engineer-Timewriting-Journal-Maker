@@ -41,10 +41,23 @@
     <div class="savebar-status"><span id="save-status" class="save-status" aria-live="polite"></span></div>
     <div id="totals" class="savebar-totals"></div>
     <div class="savebar-actions">
+      <button id="sheet-btn" class="btn" type="button" title="Fill this month in from your own timesheet spreadsheet (.xlsx). You can also drop the file onto the page.">Load from spreadsheet</button>
+      <input id="sheet-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
       <button id="preview-btn" class="btn" type="button">Journal preview</button>
       <button id="save-btn" class="btn btn-primary" type="button" title="Save (Ctrl+S)">Save</button>
     </div>
   </footer>
+
+  <dialog id="confirm" class="dialog" aria-labelledby="confirm-title">
+    <div class="dialog-head"><h2 id="confirm-title"></h2></div>
+    <div class="dialog-body">
+      <p id="confirm-text"></p>
+      <div class="confirm-actions">
+        <button id="confirm-no" class="btn" type="button">Cancel</button>
+        <button id="confirm-yes" class="btn btn-primary" type="button"></button>
+      </div>
+    </div>
+  </dialog>
 
   <dialog id="preview" class="dialog dialog-wide" aria-labelledby="preview-title">
     <div class="dialog-head">

@@ -334,8 +334,10 @@ def expire_recoveries(state: dict, now: dt.datetime | None = None) -> int:
     return expired
 
 
-def profile_for(person: dict, settings: dict, keys: Keys, epoch: int, record: dict, admin_token: str | None) -> dict:
-    """What only this person's sign-in unlocks."""
+def profile_for(person: dict, settings: dict, keys: Keys, epoch: int, record: dict, admin_token: str | None,
+                write_keys: dict | None = None) -> dict:
+    """What only this person's sign-in unlocks. Admins also get `write_keys` (each engineer's
+    tag and timesheet keys), for "Allow write access" on an engineer's timesheet."""
     username = person["username"]
     profile = {
         "v": 3,
@@ -358,7 +360,17 @@ def profile_for(person: dict, settings: dict, keys: Keys, epoch: int, record: di
         profile["storeKey"] = b64(store_key(keys.master))
         if admin_token:
             profile["adminToken"] = admin_token
+        if write_keys:
+            profile["writeKeys"] = write_keys
     return profile
+
+
+def write_keys_for(people_list: list[dict], keys: Keys, users: dict) -> dict:
+    """{username: {"tag", "dataKeys"}} for everyone who fills in timesheets: what saving as
+    them needs. Only admins' profiles carry it (they can already read every timesheet)."""
+    return {p["username"]: {"tag": user_tag(keys.master, p["username"]),
+                            "dataKeys": [b64(k) for k in keys.data_keys(p["username"], users[p["username"]])]}
+            for p in people_list if p["timesheets"] and p["username"] in users}
 
 
 def recovery_profile(profile: dict, recover: dict) -> dict:
