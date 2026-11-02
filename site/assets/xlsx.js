@@ -233,12 +233,27 @@ export function sheetMonth(sheet) {
   return date ? key(date) : '';
 }
 
+// Who the sheet says it's for: the cell beside "NAME" above the heading row, or ''.
+export function sheetName(sheet) {
+  const rows = sheet.rows;
+  const headerAt = rows.findIndex((row) => row.some((cell) => HEADING.test(text(cell))));
+  const nameRow = rows.slice(0, headerAt < 0 ? 10 : headerAt).find((row) => /^name\s*:?$/i.test(text(row[0])));
+  return nameRow ? text(nameRow[1]) : '';
+}
+
+// Whether the sheet is the Business Central Job Task Overview report rather than a timesheet.
+export function isJobReport(sheet) {
+  return sheet.rows.slice(0, 10).some((row) => row.some((cell) => /^project task no\.?$/i.test(text(cell)))
+    && row.some((cell) => /^project no\.?$/i.test(text(cell))));
+}
+
 /**
  * The month `month` ("2026-10") from a sheet read by readFirstSheet, in the saved-timesheet
  * shape ({ jobs, other }). `jobs` maps job numbers to the job list's entries (for CAPEX/REVEX
  * when the sheet doesn't say), `otherTime` lists the office's other-time names. Returns
  * { data, notes, name }: notes are things to tell the engineer; name is the sheet's NAME.
- * Throws if the sheet isn't a timesheet, or is for another month.
+ * Throws if the sheet isn't a timesheet, or is for another month (then the error's `month`
+ * is the month it's for, "2026-09").
  */
 export function timesheetFromSheet(sheet, month, { jobs = new Map(), otherTime = [] } = {}) {
   const [year, number] = month.split('-').map(Number);
@@ -260,13 +275,16 @@ export function timesheetFromSheet(sheet, month, { jobs = new Map(), otherTime =
 
   // Day columns: dates in the heading row (or the row above it), else day numbers 1-31.
   const dayColumns = new Map();
-  const otherMonths = new Set();
+  const otherMonths = new Map(); // "2026-09" -> how many of its dates
   for (const row of [header, rows[headerAt - 1] || []]) {
     row.forEach((cell, col) => {
       const date = asDate(cell, sheet.date1904);
       if (!date || dayColumns.has(col)) return;
       if (date.getUTCFullYear() === year && date.getUTCMonth() + 1 === number) dayColumns.set(col, date.getUTCDate());
-      else otherMonths.add(`${MONTHS[date.getUTCMonth()]} ${date.getUTCFullYear()}`);
+      else {
+        const other = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+        otherMonths.set(other, (otherMonths.get(other) || 0) + 1);
+      }
     });
     if (dayColumns.size) break;
   }
@@ -277,9 +295,10 @@ export function timesheetFromSheet(sheet, month, { jobs = new Map(), otherTime =
     });
   }
   if (!dayColumns.size) {
-    throw new Error(otherMonths.size
-      ? `This spreadsheet is for ${[...otherMonths][0]}, not ${label}. To load it, go to ${[...otherMonths][0]} first (with ‹ › at the top).`
-      : 'The “Job Number” heading row has no dates (or day numbers) above the hours, so the days can’t be matched up.');
+    if (!otherMonths.size) throw new Error('The “Job Number” heading row has no dates (or day numbers) above the hours, so the days can’t be matched up.');
+    const [other] = [...otherMonths].sort((a, b) => b[1] - a[1])[0];
+    const [y, m] = other.split('-').map(Number);
+    throw Object.assign(new Error(`This spreadsheet is for ${MONTHS[m - 1]} ${y}, not ${label}.`), { month: other });
   }
 
   const notes = [];
@@ -372,6 +391,5 @@ export function timesheetFromSheet(sheet, month, { jobs = new Map(), otherTime =
     notes.push(`The spreadsheet doesn’t say CAPEX or REVEX for ${guessed.length === 1 ? 'job' : 'jobs'} ${guessed.join(', ')}, so ${guessed.length === 1 ? 'its' : 'their'} hours went on REVEX. Move them if they should be CAPEX.`);
   }
   // (Closed jobs aren't mentioned here: the timesheet page already marks them.)
-  const nameRow = rows.slice(0, headerAt).find((row) => /^name\s*:?$/i.test(text(row[0])));
-  return { data: { jobs: [...jobRows.values()], other: [...otherRows.values()] }, notes, name: nameRow ? text(nameRow[1]) : '' };
+  return { data: { jobs: [...jobRows.values()], other: [...otherRows.values()] }, notes, name: sheetName(sheet) };
 }

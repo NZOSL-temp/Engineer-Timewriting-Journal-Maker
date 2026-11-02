@@ -43,6 +43,7 @@ Working with the data repo (updating jobs, rates, downloading journals) is descr
 
 **Admins** (listed under `admins` in the data repo's settings) sign in to the **Admin** page, where they can:
 - upload a new *Job Task Overview* report, which is checked, saved in the private repo and published to the website within a minute or two;
+- load the timesheet spreadsheets engineers send in, any number at once, under **Timesheets from spreadsheets**: drop the .xlsx files in and each one is read like **Load from spreadsheet** (step 5). Who it's for comes from its **NAME** or its file name (it says when they disagree), and its month from its dates; both can be changed. The list shows what each one does (a new timesheet, or replacing one already saved), what's in it and anything to check, and refuses ones it can't save (a closed month, more than 24 hours on a day, two files for the same month). **Save** asks first, naming the saved months it replaces, then saves each as that engineer's saved copy, as if they'd loaded it themselves. If an engineer saves the same month again in the meantime, theirs isn't replaced without asking again;
 - add and remove engineers, set each engineer's recharge rate (there's no default rate) and email address (for password resets), and see, copy or reset passwords;
 - view and download each month's journal and engineer workbooks, or tick months and use **Download all journal CSVs** and **Download all engineer workbooks** (several months come as one .zip);
 - **Close** a month once its journal is uploaded, which freezes it (with fireworks, as for an engineer's Save);
@@ -81,4 +82,4 @@ python -m unittest discover -s tests
 python -m http.server -d site 8000   # needs site/data/bundle.enc.json and users.json to sign in
 ```
 
-`tests/browser_check.py` runs the real pages in Chromium against a fake GitHub and a temporary encrypted data repo, with made-up people (`pip install playwright && playwright install chromium` first). It covers loading a month from a spreadsheet, including files written the way other programs write them, and the office's **Allow write access**.
+`tests/browser_check.py` runs the real pages in Chromium against a fake GitHub and a temporary encrypted data repo, with made-up people (`pip install playwright && playwright install chromium` first). It covers loading a month from a spreadsheet, including files written the way other programs write them, the office's **Allow write access**, and the Admin page's **Timesheets from spreadsheets** (with GitHub's search and the Action slow to catch up).

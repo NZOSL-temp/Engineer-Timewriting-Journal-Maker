@@ -25,6 +25,7 @@ const KEYS = {
   issue: 'etjm.issue.v4.',
   write: 'etjm.writeAs.v1.',
   import: 'etjm.import.v1.',
+  recent: 'etjm.recent.v1.',
 };
 
 // Timesheet copies kept by earlier versions of the site (from testing, before the data was
@@ -182,6 +183,12 @@ export function monthInfo(month) {
 }
 
 export const isMonth = (value) => /^\d{4}-(0[1-9]|1[0-2])$/.test(value || '');
+
+// The months timesheets can be started (or loaded from a spreadsheet) for: from the first month
+// on the website, September 2026, to next month.
+export const FIRST_MONTH = '2026-09';
+export const latestMonth = () => shiftMonth(thisMonth(), 1);
+export const monthSpan = () => `${monthInfo(FIRST_MONTH).label} to ${monthInfo(latestMonth()).label}`;
 
 export function fmtDateTime(iso) {
   if (!iso) return '';
@@ -357,6 +364,9 @@ export function clearSession() {
   store.remove(KEYS.session, 'session');
   store.remove(KEYS.session, 'local');
   writeAccess.clearAll();
+  try {
+    for (const key of Object.keys(sessionStorage)) if (key.startsWith(KEYS.recent)) sessionStorage.removeItem(key);
+  } catch { /* storage unavailable */ }
 }
 
 // ------------------------------------------------------------ signing in
@@ -385,7 +395,13 @@ async function fetchJSON(url, what) {
   }
   if (response.status === 404) throw new AppError('missing', `The ${what} hasn’t been published yet. Please ask the office.`);
   if (!response.ok) throw new AppError('network', `Couldn’t load the ${what} (error ${response.status}).`);
-  return response.json();
+  // A download cut off (say by leaving the page while it loads) is a network problem, not a
+  // sign-in that's stopped working: openSession signs people out only for the latter.
+  try {
+    return await response.json();
+  } catch {
+    throw new AppError('network', `Couldn’t load the ${what}. Check your connection and try again.`);
+  }
 }
 
 async function sha256Hex(text) {
@@ -768,6 +784,8 @@ export function adminRepo(bundle, profile) {
     file: (path) => missingOk(call('GET', `/repos/${repo}/contents/${encodePath(path)}`), null),
     list: (path) => missingOk(call('GET', `/repos/${repo}/contents/${encodePath(path)}`), []),
     runs: (sha) => call('GET', `/repos/${repo}/actions/runs?head_sha=${sha}&per_page=10`),
+    // Runs started since `iso` (like "2026-11-02T03:04:05Z"), newest first.
+    runsSince: (iso) => call('GET', `/repos/${repo}/actions/runs?created=${encodeURIComponent(`>=${iso}`)}&per_page=50`),
     // A file's decrypted bytes, or null if it doesn't exist.
     async read(path) {
       const blob = await missingOk(raw(path), null);
@@ -794,11 +812,12 @@ export function adminRepo(bundle, profile) {
 
 // --------------------------------------------------------------- viewing as
 //
-// "View" on the Admin page shows an engineer's pages as they see them, read-only. It uses
-// each month's last verified save, which the Actions keep (encrypted) in the data repo and
-// the journals are built from, so admins see nothing new. Nothing can be changed: saving
-// needs the engineer's own timesheet key, which admins don't have. Hours an engineer has
-// typed but not saved are only on their computer, so they don't show.
+// "View" on the Admin page shows an engineer's pages as they see them, read-only until the
+// office presses "Allow write access". It uses each month's last verified save, which the
+// Actions keep (encrypted) in the data repo and the journals are built from, plus their latest
+// saves (see savedMonths). Saving as them uses their timesheet keys, which only admins' sign-ins
+// carry (writeKeys). Hours an engineer has typed but not saved are only on their computer, so
+// they don't show.
 
 export const viewAsParam = () => normalizeUsername(new URLSearchParams(location.search).get('as') || '');
 
@@ -810,28 +829,59 @@ export async function openViewAs(bundle, profile, username) {
   const settings = (await repo.readJson('settings.json'))?.data || {};
   const employee = (settings.employees || []).find((e) => normalizeUsername(e.username || defaultUsername(e.name)) === username);
   if (!employee) throw new AppError('view-as', `There’s no engineer with the username ${username}.`);
-  const files = (await repo.list('timesheets')).filter((f) => f.type === 'file' && f.name.endsWith('.json'));
-  const months = new Map();
-  for (const file of files) {
-    const month = JSON.parse(fromUtf8.decode(await repo.read(file.path)));
-    const theirs = (month.timesheets || []).find((t) => t.username === username && !t.deleted);
-    if (theirs && isMonth(month.month)) months.set(month.month, { month: month.month, savedAt: theirs.savedAt, data: theirs });
-  }
   const person = { name: employee.name, username, rate: employee.rechargeRate ?? null, active: employee.active !== false };
-  // The verified copies are updated about a minute after each save. With their keys (admins'
-  // sign-ins carry them), their latest saves (and deletions) show straight away.
-  if (profile.writeKeys?.[username]) {
+  return { person, months: await savedMonths(bundle, profile, person, await readVerified(repo)) };
+}
+
+// The verified copies of everyone's timesheets (timesheets/ in the data repo, one file per
+// month, kept by the Actions): [{ month, timesheets: [...] }]. Needs an admin's sign-in.
+export async function readVerified(repo) {
+  const files = (await repo.list('timesheets')).filter((f) => f.type === 'file' && f.name.endsWith('.json'));
+  return Promise.all(files.map(async (file) => JSON.parse(fromUtf8.decode(await repo.read(file.path)))));
+}
+
+// One engineer's saved months, Map(month -> { month, savedAt, issue, data }): their verified
+// copies (`verified`, from readVerified), which are updated about a minute after each save.
+// With their keys (admins' sign-ins carry them), their latest saves and deletions show
+// straight away, as do saves made from this browser tab that GitHub's search doesn't list yet.
+// Closed months keep the frozen copy.
+export async function savedMonths(bundle, profile, person, verified) {
+  const { username } = person;
+  const closed = new Set(bundle.closedMonths || []);
+  const months = new Map();
+  // Saves (issues) only count for months that aren't closed, as in the journals.
+  const consider = (item, isSave = true) => {
+    if (!isMonth(item.month) || (isSave && closed.has(item.month))) return;
+    const known = months.get(item.month);
+    if (known && (known.savedAt || '') > (item.savedAt || '')) return;
+    months.set(item.month, item);
+  };
+  for (const month of verified) {
+    const theirs = (month.timesheets || []).find((t) => t.username === username);
+    if (theirs) consider({ month: month.month, savedAt: theirs.savedAt, issue: theirs.issue, ...(theirs.deleted ? { deleted: true } : { data: theirs }) }, false);
+  }
+  let writer = null;
+  try {
+    writer = profile.writeKeys?.[username] ? writerFor(profile, person) : null;
+  } catch { /* no keys for them yet */ }
+  if (writer) {
     try {
-      for (const item of await listSaved(bundle, writerFor(profile, person), username, { withDeleted: true })) {
-        if ((bundle.closedMonths || []).includes(item.month)) continue; // closed: the frozen copy is what counts
-        const known = months.get(item.month);
-        if (known && (known.savedAt || '') > (item.savedAt || '')) continue;
-        if (item.deleted) months.delete(item.month);
-        else months.set(item.month, item);
+      for (const item of await listSaved(bundle, writer, username, { withDeleted: true })) {
+        store.set(issueCacheKey(bundle, writer, item.month), item.issue); // so saving as them updates it
+        consider(item);
       }
     } catch { /* the verified copies are enough */ }
+    for (const { month, number } of recentSaves(bundle, writer.tag)) {
+      try {
+        const issue = await github(bundle, 'GET', `/repos/${bundle.dataRepo}/issues/${number}`);
+        if (!isOurs(issue, issueTitle(writer, month))) continue;
+        const { data } = await readIssue(issue, writer, username, month);
+        if (data) consider({ month, savedAt: data.savedAt, issue: number, ...(data.deleted ? { deleted: true } : { data }) });
+      } catch { /* listed once GitHub's search catches up */ }
+    }
   }
-  return { person, months };
+  for (const [month, item] of months) if (item.deleted) months.delete(month);
+  return months;
 }
 
 // The username settings.json gives someone by default ("Alex Smith" -> "alex.smith"),
@@ -901,19 +951,37 @@ function totals(data) {
 }
 export { totals as sheetTotals };
 
-// Every month this person has saved to the office (that could be opened with their keys).
+// Every month this person has saved to the office (that could be opened with their keys). If a
+// month somehow has two issues, the newer save counts, as in the journals.
 export async function listSaved(bundle, profile, username, { withDeleted = false } = {}) {
   const query = `repo:${bundle.dataRepo} is:issue in:title "Timesheet" "${profile.tag}"`;
   const result = await github(bundle, 'GET', `/search/issues?q=${encodeURIComponent(query)}&sort=created&order=desc&per_page=100`);
   const byMonth = new Map();
   for (const issue of result.items || []) {
     const match = issue.title.trim().match(/^Timesheet (\d{4}-\d{2}) · ([0-9a-f]{16})$/);
-    if (!match || match[2] !== profile.tag || byMonth.has(match[1]) || !isOurs(issue, issue.title.trim())) continue;
+    if (!match || match[2] !== profile.tag || !isOurs(issue, issue.title.trim())) continue;
     const { data } = await readIssue(issue, profile, username, match[1]);
-    if (data?.deleted) byMonth.set(match[1], withDeleted ? { month: match[1], savedAt: data.savedAt, issue: issue.number, deleted: true } : null);
-    else if (data) byMonth.set(match[1], { month: match[1], savedAt: data.savedAt, issue: issue.number, data });
+    if (!data) continue;
+    const known = byMonth.get(match[1]);
+    if (known && (known.savedAt || '') >= (data.savedAt || '')) continue;
+    byMonth.set(match[1], { month: match[1], savedAt: data.savedAt, issue: issue.number, ...(data.deleted ? { deleted: true } : { data }) });
   }
-  return [...byMonth.values()].filter(Boolean);
+  return [...byMonth.values()].filter((item) => withDeleted || !item.deleted);
+}
+
+// Months saved from this browser tab, as [{ month, number }] for one person's tag: GitHub's
+// search can take a minute to list a new or changed issue, so these are fetched directly.
+function recentSaves(bundle, tag) {
+  const prefix = `${KEYS.recent}${bundle.dataRepo}.${tag}.`;
+  const found = [];
+  try {
+    for (const key of Object.keys(sessionStorage)) {
+      const month = key.startsWith(prefix) ? key.slice(prefix.length) : '';
+      const number = Number(sessionStorage.getItem(key));
+      if (isMonth(month) && Number.isInteger(number) && number > 0) found.push({ month, number });
+    }
+  } catch { /* storage unavailable */ }
+  return found;
 }
 
 export async function loadSaved(bundle, profile, username, month) {
@@ -944,7 +1012,10 @@ export async function deleteSaved(bundle, profile, username, month, issueNumber)
   return true;
 }
 
-export async function saveToGitHub(bundle, profile, username, data) {
+// Save a month as `profile`'s saved copy. With `replacing` (the savedAt of the save it's meant
+// to replace, '' for none), nothing is saved if the month has a newer save than that: an
+// AppError 'newer' is thrown instead, with that save as its `saved`.
+export async function saveToGitHub(bundle, profile, username, data, { replacing } = {}) {
   const index = profile.dataKeys.length - 1;
   const token = await seal(b64ToBytes(profile.dataKeys[index]), utf8.encode(JSON.stringify(data)), `etjm-ts|${username}|${data.month}`);
   const body = [MARKER, `Encrypted timesheet for ${monthInfo(data.month).label}. Only its engineer and the timewriting system can read it.`,
@@ -952,9 +1023,16 @@ export async function saveToGitHub(bundle, profile, username, data) {
   if (body.length > 65000) throw new AppError('too-big', 'This timesheet is too large to save. Remove some empty rows and try again.');
   const title = issueTitle(profile, data.month);
   const existing = await findIssue(bundle, profile, data.month);
+  if (existing && replacing !== undefined) {
+    const current = (await readIssue(existing, profile, username, data.month)).data;
+    if (current && !current.deleted && (current.savedAt || '') > replacing) {
+      throw Object.assign(new AppError('newer', `${profile.name || 'They'} saved ${monthInfo(data.month).label} at ${fmtDateTime(current.savedAt)}.`), { saved: current });
+    }
+  }
   const issue = existing
     ? await github(bundle, 'PATCH', `/repos/${bundle.dataRepo}/issues/${existing.number}`, { title, body })
     : await github(bundle, 'POST', `/repos/${bundle.dataRepo}/issues`, { title, body });
   store.set(issueCacheKey(bundle, profile, data.month), issue.number);
+  store.set(`${KEYS.recent}${bundle.dataRepo}.${profile.tag}.${data.month}`, issue.number, 'session');
   return issue;
 }

@@ -1,5 +1,6 @@
 // Admin page: upload a new Job Task Overview report into the private data repo
-// (which updates the website's job list), and view or download the journals.
+// (which updates the website's job list), load timesheets from the spreadsheets engineers
+// send (bulk.js), manage engineers, and view or download the journals.
 // Everything here uses the admin token from the person's profile. Every file in the data
 // repo is encrypted (see adminRepo in app.js), and commit messages name nobody.
 
@@ -8,6 +9,7 @@ import {
   cleanText, nameProblem, nameKey, defaultUsername, issuedPassword,
 } from './app.js';
 import { fireworks } from './fireworks.js';
+import { setUpBulkLoad, settingsChanged } from './bulk.js';
 
 const session = loadSession();
 if (!session?.uk) location.replace('index.html?next=admin.html');
@@ -61,14 +63,15 @@ async function zipText(bytes, wanted) {
 const unescapeXml = (text) => text.replace(/&(amp|lt|gt|quot|apos|#\d+);/g, (m, e) => (
   { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }[e] ?? String.fromCharCode(Number(e.slice(1)))));
 
-// The report's column headings that are missing, or null if this browser can't check.
+// The report's column headings that are missing (null if this browser can't check), and
+// whether the file looks like an engineer's timesheet instead (it has a "Job Number" heading).
 async function missingColumns(bytes) {
   if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) throw new Error('not a zip');
-  if (typeof DecompressionStream !== 'function') return null;
+  if (typeof DecompressionStream !== 'function') return { missing: null };
   const text = (await zipText(bytes, 'xl/sharedStrings.xml')) ?? (await zipText(bytes, 'xl/worksheets/sheet1.xml'));
-  if (text == null) return null;
+  if (text == null) return { missing: null };
   const found = new Set([...text.matchAll(/<t(?:\s[^>]*)?>([^<]*)<\/t>/g)].map((m) => unescapeXml(m[1]).replace(/\s+/g, ' ').trim().toLowerCase()));
-  return REQUIRED.filter((name) => !found.has(name.toLowerCase()));
+  return { missing: REQUIRED.filter((name) => !found.has(name.toLowerCase())), timesheet: found.has('job number') };
 }
 
 function step(id, text, tone = 'busy') {
@@ -123,11 +126,15 @@ async function upload(file) {
     if (!/\.xlsx$/i.test(file.name)) throw new Error('That isn’t an .xlsx file. Export the Job Task Overview report from Business Central to Excel.');
     if (file.size > 25 * 1024 * 1024) throw new Error('That file is over 25 MB, which is far too big for a Job Task Overview report.');
     const bytes = new Uint8Array(await file.arrayBuffer());
-    let missing;
+    let checked;
     try {
-      missing = await missingColumns(bytes);
+      checked = await missingColumns(bytes);
     } catch {
       throw new Error('That file can’t be opened as an Excel .xlsx file.');
+    }
+    const { missing, timesheet } = checked;
+    if (missing?.length && timesheet) {
+      throw new Error('That looks like an engineer’s timesheet, not the Job Task Overview report. Drop timesheets under “Timesheets from spreadsheets”, below.');
     }
     if (missing?.length) {
       throw new Error(`This doesn’t look like the Job Task Overview report: it has no ${missing.map((m) => `“${m}”`).join(', ')} column${missing.length > 1 ? 's' : ''}.`);
@@ -178,7 +185,24 @@ function setUpUpload() {
   zone.addEventListener('drop', (event) => {
     event.preventDefault();
     zone.classList.remove('over');
+    if (event.dataTransfer.files.length > 1) {
+      toast('Drop one Job Task Overview report here. Engineers’ timesheets go under “Timesheets from spreadsheets”, below.', { tone: 'warn', duration: 8000 });
+      return;
+    }
     upload(event.dataTransfer.files[0]);
+  });
+}
+
+// A file dropped beside the boxes would otherwise open in the browser, leaving this page.
+function guardDrops() {
+  const hasFile = (event) => [...(event.dataTransfer?.types || [])].includes('Files');
+  document.addEventListener('dragover', (event) => {
+    if (hasFile(event) && !event.target.closest?.('.dropzone')) event.preventDefault();
+  });
+  document.addEventListener('drop', (event) => {
+    if (!hasFile(event) || event.target.closest?.('.dropzone')) return;
+    event.preventDefault();
+    toast('Drop files onto one of the dashed boxes.', { tone: 'warn' });
   });
 }
 
@@ -465,6 +489,7 @@ async function saveSettings(settings, { resetPasswords = [], message, status, wa
       state.settings = settings;
       state.settingsSha = saved.sha;
       commit = saved.commit;
+      settingsChanged();
     }
     if (!commit || !wait) return commit;
     status('Saved. Updating the website and journals, about a minute…', 'busy');
@@ -491,6 +516,7 @@ async function loadSettings() {
   state.settingsSha = settings.sha;
   state.users = users?.data?.users || {};
   renderStaff();
+  settingsChanged();
 }
 
 // The same rules as clean_email() in tools/etjm_core.py.
@@ -776,6 +802,27 @@ async function setClosed(month, close, button) {
   }
 }
 
+// After timesheets are saved from spreadsheets: each save starts an "Update website and
+// journals" run (the last one counts). Once the runs started since `since` have finished,
+// show the rebuilt journals.
+async function journalsAfterSaves(since) {
+  const deadline = Date.now() + 8 * 60 * 1000;
+  await sleep(15000);
+  while (Date.now() < deadline) {
+    const runs = (await state.repo.runsSince(since).catch(() => null))?.workflow_runs
+      ?.filter((run) => (run.path || '').endsWith('update.yml'));
+    if (runs?.length && runs.every((run) => run.status === 'completed')) {
+      const last = runs.reduce((a, b) => ((b.run_number || 0) > (a.run_number || 0) ? b : a));
+      if (last.conclusion === 'failure') {
+        notice('error', 'The timesheets were saved, but rebuilding the journals failed. Look at the “Update website and journals” run in the data repo’s Actions tab.');
+      }
+      await loadJournals();
+      return;
+    }
+    await sleep(10000);
+  }
+}
+
 // ------------------------------------------------------------------- start
 
 async function start() {
@@ -796,6 +843,7 @@ async function start() {
   $('#timesheets-link').hidden = !state.profile.timesheets;
   if (!state.profile.admin) {
     $('#jobs-card').hidden = true;
+    $('#sheets-card').hidden = true;
     $('#staff-card').hidden = true;
     $('#journals-card').hidden = true;
     notice('info', 'This page is for the office. Use My timesheets to fill in your hours.');
@@ -811,17 +859,24 @@ async function start() {
     $('#report-file').disabled = true;
     $('#journals').replaceChildren(el('p', { class: 'muted' }, 'Available once the admin key is set up.'));
     $('#staff').replaceChildren(el('p', { class: 'muted' }, 'Available once the admin key is set up.'));
+    $('#sheet-drop-hint').textContent = 'Available once the admin key is set up.';
     return;
   }
   state.repo = adminRepo(state.bundle, state.profile);
+  guardDrops();
   setUpUpload();
   setUpEmptyJobsOption();
   setUpWorkbookMenus();
+  let engineers = false;
   try {
     await loadSettings();
+    engineers = true;
   } catch (error) {
     $('#staff').replaceChildren(el('p', { class: 'form-message' }, error.message));
   }
+  if (!state.bundle.saveToken) $('#sheet-drop-hint').textContent = 'Available once saving is switched on (the SAVE_TOKEN secret in the data repo).';
+  else if (!engineers) $('#sheet-drop-hint').textContent = 'Available once the list of engineers loads. Reload the page to try again.';
+  else setUpBulkLoad({ bundle: state.bundle, profile: state.profile, repo: state.repo, settings: () => state.settings, onSaved: journalsAfterSaves });
   loadJournals();
 }
 

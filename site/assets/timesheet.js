@@ -1179,7 +1179,8 @@ async function loadSpreadsheet(file) {
     const sheet = await readFirstSheet(new Uint8Array(await file.arrayBuffer()));
     result = timesheetFromSheet(sheet, state.month, { jobs: state.jobs, otherTime: state.bundle.otherTime || [] });
   } catch (error) {
-    toast(error.message || 'That spreadsheet couldn’t be read.', { tone: 'error', duration: 9000 });
+    const advice = isMonth(error.month) ? ` To load it, go to ${monthInfo(error.month).label} first (with ‹ › at the top).` : '';
+    toast(`${error.message || 'That spreadsheet couldn’t be read.'}${advice}`, { tone: 'error', duration: 9000 });
     return;
   }
   await useSpreadsheet(result, file.name);

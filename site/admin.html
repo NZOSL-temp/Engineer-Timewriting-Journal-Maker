@@ -45,6 +45,22 @@
       </div>
     </section>
 
+    <section id="sheets-card" class="card admin-card" aria-labelledby="sheets-title">
+      <div class="card-head">
+        <h2 id="sheets-title">Timesheets from spreadsheets</h2>
+        <p class="muted">When engineers send you their timesheet spreadsheets, drop them all here. Each one fills in that engineer’s month as if they’d typed it in themselves. Check the list, then press Save: nothing is saved before that.</p>
+      </div>
+      <div class="card-body">
+        <label id="sheet-drop" class="dropzone disabled">
+          <input id="sheet-files" class="sr-only" type="file" multiple disabled accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12">
+          <span class="dropzone-icon" aria-hidden="true">⇪</span>
+          <strong>Drop engineers’ timesheet spreadsheets here</strong>
+          <span id="sheet-drop-hint" class="muted">Any number of .xlsx files at once, or click to choose them. The first sheet of each is read on this computer; who and which month come from the spreadsheet.</span>
+        </label>
+        <div id="sheet-list" aria-live="polite"></div>
+      </div>
+    </section>
+
     <section id="staff-card" class="card admin-card" aria-labelledby="staff-title">
       <div class="card-head">
         <h2 id="staff-title">Engineers</h2>

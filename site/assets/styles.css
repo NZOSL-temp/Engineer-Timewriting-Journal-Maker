@@ -824,3 +824,47 @@ body.drop-over::after { content: "Drop the spreadsheet to load it"; position: fi
 .new-file-status { flex-basis: 100%; font-size: 13px; }
 .new-file-status:empty { display: none; }
 .new-file-status.problem { color: var(--danger); }
+
+/* Admin › Timesheets from spreadsheets */
+#sheet-list { margin-top: 16px; }
+#sheet-list:empty { display: none; }
+.bulk-scroll { position: relative; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+.bulk-table { min-width: 820px; }
+.bulk-table th, .bulk-table td { padding: 10px 12px; vertical-align: top; }
+.bulk-table thead th { border-top: 0; }
+.bulk-table tbody th[scope="row"] { width: 26%; }
+.bulk-table .num { white-space: nowrap; }
+.bulk-file { display: block; font-weight: 650; overflow-wrap: anywhere; }
+.bulk-table select { max-width: 190px; }
+.bulk-status { width: 30%; }
+.bulk-status .chip { margin-right: 0; }
+.bulk-status .row-note { margin-top: 4px; }
+.bulk-message.warn { color: var(--warn); }
+.bulk-message.error { color: var(--danger); }
+.chip-error { background: var(--danger-bg); color: var(--danger); }
+.bulk-more > td { padding-top: 0 !important; border-top: 0 !important; }
+.bulk-more .checks { margin: 0 0 8px; font-size: 13.5px; }
+.bulk-details summary { width: fit-content; color: var(--accent); font-size: 13px; cursor: pointer; }
+.bulk-what { margin: 6px 0 0; padding-left: 20px; font-size: 13px; columns: 2 300px; column-gap: 32px; }
+.bulk-row[data-state="saved"] { background: color-mix(in srgb, var(--ok-bg) 45%, transparent); }
+
+@media (max-width: 760px) {
+  /* Each spreadsheet becomes a card: its name, then who and which month, then what happens. */
+  .bulk-scroll { overflow: visible; border: 0; border-radius: 0; }
+  .bulk-table { min-width: 0; }
+  .bulk-table thead { display: none; }
+  .bulk-table, .bulk-table tbody, .bulk-table tr, .bulk-table th, .bulk-table td { display: block; width: auto !important; }
+  .bulk-table th, .bulk-table td { padding: 0 !important; border-top: 0 !important; }
+  .bulk-row { margin-bottom: 10px; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .bulk-row > tr:first-child { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 8px; padding: 12px; }
+  .bulk-row > tr:first-child > th { grid-area: 1 / 1 / 2 / 3; }
+  .bulk-row > tr:first-child > td:nth-child(2) { grid-area: 2 / 1; }
+  .bulk-row > tr:first-child > td:nth-child(3) { grid-area: 2 / 2; }
+  .bulk-row > tr:first-child > td:nth-child(5) { grid-area: 3 / 1 / 4 / 3; }
+  .bulk-row > tr:first-child > td:nth-child(4) { grid-area: 4 / 1; align-self: center; text-align: left; }
+  .bulk-row > tr:first-child > td:nth-child(6) { grid-area: 4 / 2; }
+  .bulk-table td.num::before { content: "Hours: "; color: var(--muted); }
+  .bulk-table td.num .row-note { display: inline; margin-left: 6px; }
+  .bulk-table select { width: 100%; max-width: none; }
+  .bulk-more > td { padding: 0 12px 12px !important; }
+}

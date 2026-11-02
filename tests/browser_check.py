@@ -3,7 +3,8 @@
 
 Runs the real pages in Chromium (Playwright) against a temporary encrypted data repo; the
 "Action" (publish_website.py and build_outputs.py) runs whenever something is saved, as on
-GitHub. Covers loading a month from a spreadsheet and the office's "Allow write access".
+GitHub. Covers loading a month from a spreadsheet, the office's "Allow write access", and the
+Admin page's "Timesheets from spreadsheets" (several engineers' spreadsheets at once).
 
     pip install playwright && playwright install chromium
     python tests/browser_check.py
@@ -65,6 +66,11 @@ vault.write_json("input/report.json", {"name": "Job Task Overview - test.xlsx", 
 lock = threading.Lock()
 issues: list[dict] = []
 dirty, busy = threading.Event(), threading.Event()
+paused = threading.Event()  # set: the "Action" waits (as when GitHub hasn't run it yet)
+# While lag["on"]: GitHub's search doesn't list new issues yet, and shows changed ones as they were.
+lag = {"on": False}
+unlisted: set[int] = set()
+stale: dict[int, dict] = {}
 errors: list[str] = []
 passed: list[str] = []
 ENV = {**os.environ, "MASTER_KEY": base64.b64encode(MASTER).decode(), "SAVE_TOKEN": "test-save-token", "ADMIN_TOKEN": "test-admin-token"}
@@ -89,7 +95,10 @@ def action():
 
 def simulator():
     while True:
-        dirty.wait(); busy.set(); dirty.clear()
+        dirty.wait()
+        while paused.is_set():
+            time.sleep(0.2)
+        busy.set(); dirty.clear()
         try:
             action()
         finally:
@@ -125,16 +134,20 @@ def github(route, request):
             target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(data); dirty.set()
             return route.fulfill(json={"commit": {"sha": f"c{time.time_ns()}"}, "content": {"sha": blob_sha(data)}})
     if "/actions/runs" in path:
-        return route.fulfill(json={"workflow_runs": [{"path": ".github/workflows/update.yml", "status": "completed", "conclusion": "success"}]})
+        running = dirty.is_set() or busy.is_set()
+        return route.fulfill(json={"workflow_runs": [{"path": ".github/workflows/update.yml", "run_number": 1,
+                                                      "status": "in_progress" if running else "completed", "conclusion": None if running else "success"}]})
     if path.startswith("/search/issues"):
         with lock:
-            items = json.loads(json.dumps(issues))
+            items = json.loads(json.dumps([stale.get(i["number"], i) for i in issues if i["number"] not in unlisted]))
         return route.fulfill(json={"total_count": len(items), "items": items[::-1]})
     m = re.match(r"/repos/[^/]+/[^/]+/issues/(\d+)$", path)
     if m:
         with lock:
             issue = next((i for i in issues if i["number"] == int(m.group(1))), None)
             if issue and method == "PATCH":
+                if lag["on"] and issue["number"] not in stale:
+                    stale[issue["number"]] = json.loads(json.dumps(issue))
                 issue.update({k: v for k, v in json.loads(request.post_data).items() if k in ("title", "body", "state")})
                 issue["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()); dirty.set()
             snapshot = json.loads(json.dumps(issue)) if issue else None
@@ -145,6 +158,8 @@ def github(route, request):
             issue = {"number": len(issues) + 1, "title": body["title"], "body": body["body"], "state": "open",
                      "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
             issues.append(issue)
+            if lag["on"]:
+                unlisted.add(issue["number"])
         dirty.set()
         return route.fulfill(status=201, json=issue)
     errors.append(f"unmocked {method} {path}")
@@ -271,6 +286,38 @@ def new_timesheet(page, month=None, *, source=None, sheet=None):
         page.check("input[name='start-with'][value='empty']")
 
 
+def drop_files(page, selector, paths):
+    """Drop files onto an element, as dragging them from the computer does."""
+    page.evaluate("""([selector, files]) => {
+      const dt = new DataTransfer();
+      for (const [name, b64] of files) dt.items.add(new File([Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))], name));
+      const target = document.querySelector(selector);
+      target.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+    }""", [selector, [[Path(p).name, base64.b64encode(Path(p).read_bytes()).decode()] for p in paths]])
+
+
+def bulk_settled(page, count):
+    """Wait until the Admin page's spreadsheet list has `count` rows, none of them still being read, checked or saved."""
+    page.wait_for_function("""(n) => {
+      const rows = [...document.querySelectorAll('#sheet-list tbody.bulk-row')];
+      return rows.length === n && !rows.some((t) => ['reading', 'checking', 'saving'].includes(t.dataset.state));
+    }""", arg=count, timeout=60000)
+
+
+def bulk_rows(page):
+    """The Admin page's spreadsheet list: {file name: {who, month, state, status, notes}}."""
+    return {r["file"]: r for r in page.evaluate("""() => [...document.querySelectorAll('#sheet-list tbody.bulk-row')].map((t) => {
+      const [who, month] = t.querySelectorAll('select');
+      const text = (node) => (node?.innerText || '').replace(/\\s+/g, ' ').trim();
+      return { file: text(t.querySelector('.bulk-file')), who: who.selectedOptions[0]?.textContent || '', month: month.value,
+               state: t.dataset.state, status: text(t.querySelector('.bulk-status')), notes: text(t.querySelector('.bulk-more .checks')) };
+    })""")}
+
+
+def bulk_row(page, name):
+    return page.locator("#sheet-list tbody.bulk-row").filter(has=page.locator(".bulk-file", has_text=re.compile(f"^{re.escape(name)}$")))
+
+
 handler = type("Q", (http.server.SimpleHTTPRequestHandler,), {"log_message": lambda *a: None})
 site_server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), lambda *a, **k: handler(*a, directory=str(SITE), **k))
 threading.Thread(target=site_server.serve_forever, daemon=True).start()
@@ -290,6 +337,11 @@ def sign_in(page, username, lands):
     page.goto(SITE_URL + "index.html")
     page.fill("#username", username); page.fill("#password", issued(username)); page.click("#submit")
     page.wait_for_url(re.compile(lands), timeout=30000)
+    page.wait_for_timeout(1500)
+    if not re.search(lands, page.url):  # sent back to sign in: say what the website had published
+        published = {name: json.loads((SITE / "data" / name).read_text()).get("epoch") for name in ("users.json", "bundle.enc.json")}
+        raise AssertionError(f"{username} was sent back to {page.url} after signing in (Action dirty={dirty.is_set()} busy={busy.is_set()}, "
+                             f"epochs {published}, errors {errors[-3:]})")
 
 
 def grid(page):
@@ -307,7 +359,11 @@ def grid(page):
 
 
 def wait_ready(page):
-    page.wait_for_selector("#grid-wrap:not([hidden])", timeout=30000)
+    try:
+        page.wait_for_selector("#grid-wrap:not([hidden])", timeout=30000)
+    except Exception as exc:  # say what the page shows instead
+        shown = page.evaluate("() => (document.querySelector('#loading') || document.querySelector('main') || document.body)?.innerText || ''")
+        raise AssertionError(f"the month didn't open: {page.url} | {shown[:300]!r} | errors so far: {errors[-3:]}") from exc
     page.wait_for_timeout(1500)
 
 
@@ -666,6 +722,182 @@ with sync_playwright() as p:
     check("engineer: sees the month the office started", page.locator("#sheets tbody tr", has_text=label_of(later)).count() == 1)
     page.goto(SITE_URL + "timesheet.html?month=2026-11"); wait_ready(page)
     check("engineer: sees the office's change", any("JOB009683" in k and v == {"1": 4, "3": 2.5, "9": 1.5} for k, v in grid(page).items()), json.dumps(grid(page)))
+    ctx.close()
+
+    # ---- The office drops the spreadsheets engineers sent onto the Admin page
+    ctx, page = new_page(browser)
+    page.goto(SITE_URL + "index.html")
+    who = page.evaluate("""async () => {
+      const { whoFor } = await import('./assets/bulk.js');
+      const people = [{ name: 'Ann Example', username: 'ann.example' }, { name: 'Ben Sample', username: 'ben.sample' },
+                      { name: 'Test Engineer', username: 'test.engineer' }];
+      const ask = (nameCell, file) => { const r = whoFor(nameCell, file, people); return r.person ? r.person.username : `? ${r.why}`; };
+      return [ask('', 'Engineer timewriting - Ben - September 2026.xlsx'), ask('', 'Engineer timesheet October.xlsx'),
+              ask('', 'Timesheet_Ann E_Oct.xlsx'), ask('', 'ben.sample.xlsx'), ask('Ann Example', 'Ben Sample.xlsx'),
+              ask('Ann', 'Eng Timesheet.xlsx'), ask('Test Engineer', 'x.xlsx')];
+    }""")
+    check("bulk: who a spreadsheet is for, from its NAME or file name", who[:4] == ["ben.sample", "? ", "ann.example", "ben.sample"]
+          and who[4].startswith("? its NAME is “Ann Example”, but its file name points to Ben Sample") and who[5:] == ["ann.example", "test.engineer"], json.dumps(who))
+    ctx.close()
+
+    ben_nov = tmp / "Eng Timesheet - Ben.xlsx"   # its NAME is someone else's: the file name says who
+    own_layout(ben_nov, nov, [["N/A", "N/A", "N/A", "General Time", "", "", 0, 4, 4],
+                              ["JOB009683", "DU", "80", "Wharfline log yard review", "REVEX", "", 0, 3, None, 2]], name="Jo Template", total_row=False)
+    ann_nov = tmp / "Timesheet Nov 2026 - Ann E.xlsx"    # replaces Ann's November
+    own_layout(ann_nov, nov, [["J0010-DU-80", "", "", "Tank repaint", "CAPEX", "", 0, 5]], total_row=False)
+    ann_copy = tmp / "Ann Example November (copy).xlsx"  # a second one for the same month
+    own_layout(ann_copy, nov, [["J0010-DU-80", "", "", "Tank repaint", "CAPEX", "", 0, 6]], total_row=False)
+    nobody = tmp / "timesheet.xlsx"                       # says nobody: the office chooses
+    own_layout(nobody, first_of(later), [["JOB009683", "", "", "Wharfline", "REVEX", "", 0, 1]], name="", total_row=False)
+    long_day = tmp / "Ben Sample - long day.xlsx"         # more than 24 hours on a day
+    own_layout(long_day, first_of(nxt), [["JOB009683", "", "", "Wharfline", "REVEX", "", 0, 20],
+                                          ["N/A", "N/A", "N/A", "Training", "", "", 0, 6]], name="Ben Sample", total_row=False)
+    august = tmp / "Ben Sample August.xlsx"               # before the website's first month
+    own_layout(august, dt.datetime(2026, 8, 1), [["JOB009683", "", "", "x", "REVEX", "", 0, 1]], name="Ben Sample", total_row=False)
+    the_report = tmp / "Job Task Overview - new.xlsx"     # the BC report, in the wrong box
+    the_report.write_bytes(raw)
+
+    ctx, page = new_page(browser)
+    sign_in(page, "dee.office", r"admin\.html")
+    page.wait_for_selector("#sheet-drop:not(.disabled)", timeout=30000)
+    drop_files(page, "#dropzone", [ben_nov])
+    page.locator("#upload-steps [data-tone='error']").wait_for(timeout=15000)
+    check("bulk: a timesheet dropped in the job report's box is sent to the right one",
+          "Timesheets from spreadsheets" in page.locator("#upload-steps").inner_text(), page.locator("#upload-steps").inner_text())
+    drop_files(page, "main", [ben_nov]); page.wait_for_timeout(300)
+    check("bulk: a file dropped beside the boxes doesn't leave the page", page.url.endswith("admin.html")
+          and "dashed boxes" in page.locator("#toast").inner_text())
+    page.set_input_files("#sheet-files", [str(ben_nov), str(ann_nov), str(nobody), str(long_day), str(august), str(tmp / "not.xlsx")])
+    drop_files(page, "#sheet-drop", [the_report])
+    bulk_settled(page, 7)
+    rows = bulk_rows(page)
+    b, a, n = rows.get(ben_nov.name, {}), rows.get(ann_nov.name, {}), rows.get(nobody.name, {})
+    check("bulk: who from the file name when the NAME is someone else's, and it says so",
+          b.get("who") == "Ben Sample" and b.get("month") == "2026-11" and b.get("state") == "ready" and "New" in b.get("status", "")
+          and "Its NAME is “Jo Template”, not Ben Sample" in b.get("notes", ""), json.dumps(b))
+    check("bulk: a month already saved says it's replaced", a.get("who") == "Ann Example" and a.get("month") == "2026-11"
+          and a.get("state") == "ready" and "Replaces" in a.get("status", "") and "Ann’s save of" in a.get("status", "")
+          and "Its NAME" not in a.get("notes", ""), json.dumps(a))
+    check("bulk: a spreadsheet that doesn't say who asks", n.get("state") == "choose" and n.get("who") == "Choose…"
+          and n.get("month") == later and "Choose who it’s for" in n.get("status", ""), json.dumps(n))
+    check("bulk: more than 24 hours on a day can't be loaded", rows.get(long_day.name, {}).get("state") == "blocked"
+          and "More than 24 hours on a day (1 " in rows.get(long_day.name, {}).get("status", ""), json.dumps(rows.get(long_day.name)))
+    check("bulk: a month before September 2026 can't be loaded", rows.get(august.name, {}).get("state") == "blocked"
+          and "only September 2026 to" in rows.get(august.name, {}).get("status", ""), json.dumps(rows.get(august.name)))
+    check("bulk: a file that isn't a spreadsheet, and the job report, are explained",
+          "isn’t an Excel" in rows.get("not.xlsx", {}).get("status", "") and "Job Task Overview report" in rows.get(the_report.name, {}).get("status", ""),
+          json.dumps([rows.get("not.xlsx"), rows.get(the_report.name)]))
+    check("bulk: Save counts only the ones ready", page.locator("#sheets-save").inner_text() == "Save 2 timesheets", page.locator("#sheets-save").inner_text())
+    bulk_row(page, nobody.name).locator("select").first.select_option("ben.sample")
+    bulk_settled(page, 7)
+    n = bulk_rows(page)[nobody.name]
+    check("bulk: choosing who it's for makes it ready", n["state"] == "ready" and n["who"] == "Ben Sample" and "A new timesheet for Ben" in n["status"], json.dumps(n))
+    page.set_input_files("#sheet-files", [str(ann_copy)])
+    bulk_settled(page, 8)
+    rows = bulk_rows(page)
+    check("bulk: two spreadsheets for the same month: neither is saved until one goes",
+          rows[ann_nov.name]["state"] == rows[ann_copy.name]["state"] == "blocked" and "Remove one of them" in rows[ann_nov.name]["status"],
+          json.dumps([rows[ann_nov.name], rows[ann_copy.name]]))
+    bulk_row(page, ann_copy.name).get_by_role("button", name=re.compile("^Remove")).click()
+    bulk_settled(page, 7)
+    check("bulk: ...removing one puts the other back", bulk_rows(page)[ann_nov.name]["state"] == "ready")
+    bulk_row(page, ben_nov.name).locator("summary").click()
+    what = bulk_row(page, ben_nov.name).locator(".bulk-what").inner_text()
+    check("bulk: What's in it lists the lines read", "JOB009683 REVEX · 5 h" in what and "General Time · 8 h" in what, what)
+    page.screenshot(path=str(SHOTS / "admin-bulk.png"), full_page=True)
+    page.set_viewport_size({"width": 390, "height": 844}); page.wait_for_timeout(300)
+    check("phone: the Admin page's spreadsheet list fits, each one's status in view", page.evaluate(
+        "() => document.documentElement.scrollWidth <= innerWidth && [...document.querySelectorAll('#sheet-list .bulk-status, #sheet-list select')]"
+        ".every((c) => c.getBoundingClientRect().right <= innerWidth && c.getBoundingClientRect().width > 0)"))
+    page.screenshot(path=str(SHOTS / "admin-bulk-phone.png"), full_page=True)
+    page.set_viewport_size({"width": 1280, "height": 900}); page.wait_for_timeout(200)
+
+    before = json.dumps(issues)
+    page.click("#sheets-save"); page.wait_for_timeout(300)
+    asked = page.locator("#confirm").inner_text() if asking(page) else ""
+    check("bulk: Save asks first, naming the saved month it replaces", "Save 3 timesheets?" in asked and "Ann Example’s November 2026" in asked, asked)
+    page.click("#confirm-no"); page.wait_for_timeout(500)
+    check("bulk: Cancel saves nothing", json.dumps(issues) == before and bulk_rows(page)[ben_nov.name]["state"] == "ready")
+
+    # Ann saves her November again after the list was made: the office's Save leaves it alone
+    actx, apage = new_page(browser)
+    sign_in(apage, "ann.example", r"home\.html")
+    apage.goto(SITE_URL + "timesheet.html?month=2026-11"); wait_ready(apage)
+    acell = apage.locator("#grid-wrap tbody tr", has_text="JOB009683").locator("input.cell[data-day='20']")
+    acell.fill("1"); acell.press("Tab"); apage.click("#save-btn")
+    apage.locator("#save-status").filter(has_text=re.compile("^Saved")).wait_for(timeout=30000)
+    actx.close()
+    wait_for_action()
+    paused.set(); lag["on"] = True  # from here GitHub is slow to catch up, as it can be
+    page.click("#sheets-save"); page.click("#confirm-yes")
+    page.locator("#sheets-save", has_text=re.compile("^Save")).wait_for(timeout=60000)
+    bulk_settled(page, 7)
+    rows = bulk_rows(page)
+    check("bulk: a month its engineer saved again meanwhile isn't replaced", rows[ann_nov.name]["state"] == "ready"
+          and "Ann saved November 2026 at" in rows[ann_nov.name]["status"] and "Press Save again" in rows[ann_nov.name]["status"], json.dumps(rows[ann_nov.name]))
+    check("bulk: ...the others are saved", rows[ben_nov.name]["state"] == rows[nobody.name]["state"] == "saved"
+          and "Saved" in rows[ben_nov.name]["status"] and bulk_row(page, ben_nov.name).get_by_role("link", name="Open").count() == 1)
+    page.click("#sheets-save"); page.wait_for_timeout(300)
+    asked = page.locator("#confirm").inner_text() if asking(page) else ""
+    check("bulk: ...Save again asks, naming it", "Save 1 timesheet?" in asked and "Ann Example’s November 2026" in asked, asked)
+    page.click("#confirm-yes")
+    page.locator("#sheets-save", has_text=re.compile("^Save")).wait_for(timeout=60000)
+    bulk_settled(page, 7)
+    check("bulk: ...then it's saved", bulk_rows(page)[ann_nov.name]["state"] == "saved")
+
+    # Before GitHub's search or the Action have caught up, the office sees what it saved
+    bulk_row(page, ben_nov.name).get_by_role("link", name="Open").click()
+    page.wait_for_url(re.compile(r"timesheet\.html\?month=2026-11&as=ben\.sample"), timeout=30000); wait_ready(page)
+    shown = grid(page)
+    check("bulk: Open shows Ben's month straight away", any("JOB009683" in k and v == {"1": 3, "3": 2} for k, v in shown.items())
+          and any("General Time" in k and v == {"1": 4, "2": 4} for k, v in shown.items()), json.dumps(shown))
+    page.goto(SITE_URL + "timesheet.html?month=2026-11&as=ann.example"); wait_ready(page)
+    shown = grid(page)
+    check("bulk: ...and Ann's replaced month", list(shown.values()) == [{"1": 5}] and any("JOB000010" in k for k in shown), json.dumps(shown))
+    page.goto(SITE_URL + "home.html?as=ben.sample"); page.wait_for_selector("#sheets table", timeout=30000)
+    check("bulk: ...and Ben's My timesheets lists both months", page.locator("#sheets tbody tr", has_text="November 2026").count() == 1
+          and page.locator("#sheets tbody tr", has_text=label_of(later)).count() == 1)
+    lag["on"] = False; stale.clear(); unlisted.clear(); paused.clear()
+    wait_for_action()
+    check("bulk: saved as Ben's, accepted by the Action", saved_month("ben.sample", "2026-11") == {
+        "JOB009683/REVEX": {"1": 3, "3": 2}, "General Time": {"1": 4, "2": 4}} and saved_month("ben.sample", later) == {"JOB009683/REVEX": {"1": 1}},
+          json.dumps([saved_month("ben.sample", "2026-11"), saved_month("ben.sample", later)]))
+    check("bulk: Ann's November replaced with her spreadsheet, nothing else kept", saved_month("ann.example", "2026-11") == {"JOB000010/CAPEX": {"1": 5}},
+          json.dumps(saved_month("ann.example", "2026-11")))
+
+    # The same spreadsheet again changes nothing; a new one is saved and the journals catch up
+    page.goto(SITE_URL + "admin.html"); page.wait_for_selector("#sheet-drop:not(.disabled)", timeout=30000)
+    page.wait_for_selector("table.journals tbody tr", timeout=30000)
+    page.set_input_files("#sheet-files", [str(ben_nov)])
+    bulk_settled(page, 1)
+    b = bulk_rows(page)[ben_nov.name]
+    check("bulk: a spreadsheet already saved like that: No change, nothing to save", b["state"] == "same" and "No change" in b["status"]
+          and page.locator("#sheets-save").is_disabled(), json.dumps(b))
+    ben_dec = tmp / "Ben Sample next month.xlsx"
+    own_layout(ben_dec, first_of(nxt), [["JOB009683", "", "", "Wharfline", "REVEX", "", 0, 2]], name="Ben Sample", total_row=False)
+    month_row = page.locator("table.journals tbody tr", has_text=label_of(nxt))
+    check("bulk: (the next month's journal has Ann only)", "1 engineer" in month_row.inner_text(), month_row.inner_text())
+    page.locator("#sheet-list").get_by_role("button", name="Clear the list").click()
+    page.set_input_files("#sheet-files", [str(ben_dec)])
+    bulk_settled(page, 1)
+    page.click("#sheets-save"); page.click("#confirm-yes")
+    page.locator("#sheets-save", has_text=re.compile("^Save")).wait_for(timeout=60000)
+    month_row.filter(has_text="2 engineers").wait_for(timeout=90000)
+    check("bulk: the journals list updates by itself once the Action has run", "2 engineers" in month_row.inner_text())
+    ctx.close()
+
+    # A job list cut off on the way (as when someone leaves a page while it loads) says so; it
+    # doesn't sign them out
+    ctx, page = new_page(browser)
+    sign_in(page, "ben.sample", r"home\.html")
+    cut = re.compile(r".*/data/bundle\.enc\.json.*")
+    page.route(cut, lambda route, request: route.fulfill(body='{"epoch": 1, "data": "cut o', content_type="application/json"))
+    page.goto(SITE_URL + "home.html"); page.wait_for_timeout(1500)
+    check("a job list cut off on the way says so, and doesn't sign anyone out", page.url.endswith("home.html")
+          and "Couldn’t load the job list" in page.locator("#notices").inner_text(), f"{page.url} {page.locator('#notices').inner_text()}")
+    page.unroute(cut)
+    page.goto(SITE_URL + "timesheet.html?month=2026-11"); wait_ready(page)
+    check("...and they're still signed in", "timesheet.html" in page.url)
     ctx.close()
 
     # A non-admin can't get write access to someone else's
